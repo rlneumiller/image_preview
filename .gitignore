@@ -1,0 +1,11 @@
+# Ignore build artifacts
+/target/
+
+# Ignore Windows debug files
+*.pdb
+
+# Ignore rustfmt backup files
+**/*.rs.bk
+
+# Ignore macOS system files
+.DS_Store
