@@ -27,6 +27,8 @@ struct ImageLoadingSettings {
     auto_scale_large_images: bool,
     max_file_size_mb: Option<u32>, // None means no limit
     supported_formats: Vec<String>,
+    svg_recolor_enabled: bool,
+    svg_target_color: [u8; 3], // RGB values
 }
 
 impl Default for ImageLoadingSettings {
@@ -43,6 +45,8 @@ impl Default for ImageLoadingSettings {
                 "svg".to_string(),
                 "bmp".to_string(),
             ],
+            svg_recolor_enabled: false,
+            svg_target_color: [128, 128, 128], // Default gray
         }
     }
 }
@@ -140,19 +144,38 @@ impl eframe::App for ImageViewerApp {
                     
                     ui.horizontal(|ui| {
                         ui.label("Max texture size:");
-                        ui.add(egui::Slider::new(&mut self.settings.max_texture_size, 1024..=32768));
+                        ui.add(egui::Slider::new(&mut self.settings.max_texture_size, 16..=32768));
                     });
 
                     ui.horizontal(|ui| {
                         ui.label("Max file size (MB):");
                         let mut max_size = self.settings.max_file_size_mb.unwrap_or(0);
-                        if ui.add(egui::Slider::new(&mut max_size, 1..=1000)).changed() {
+                        if ui.add(egui::Slider::new(&mut max_size, 1..=10)).changed() {
                             self.settings.max_file_size_mb = if max_size > 0 { Some(max_size) } else { None };
                         }
                         if ui.button("No limit").clicked() {
                             self.settings.max_file_size_mb = None;
                         }
                     });
+
+                    ui.separator();
+                    ui.heading("SVG Options");
+                    ui.checkbox(&mut self.settings.svg_recolor_enabled, "Enable SVG recoloring");
+                    
+                    if self.settings.svg_recolor_enabled {
+                        ui.horizontal(|ui| {
+                            ui.label("Target color:");
+                            let mut color = egui::Color32::from_rgb(
+                                self.settings.svg_target_color[0],
+                                self.settings.svg_target_color[1],
+                                self.settings.svg_target_color[2],
+                            );
+                            if ui.color_edit_button_srgba(&mut color).changed() {
+                                let [r, g, b, _] = color.to_array();
+                                self.settings.svg_target_color = [r, g, b];
+                            }
+                        });
+                    }
                 });
         }
 
@@ -189,7 +212,16 @@ impl eframe::App for ImageViewerApp {
                         if let Some(texture) = &self.image_texture {
                             ui.image(texture);
                         } else {
-                            ui.label(&self.status_text);
+                            // Customize status text color with good contrast against grey background
+                            let text_color = if self.status_text.contains("Error") || self.status_text.contains("Skipped") {
+                                egui::Color32::from_rgb(255, 120, 120) // Light red for errors - good contrast on grey
+                            } else if self.status_text.contains("recolored") {
+                                egui::Color32::from_rgb(120, 255, 120) // Light green for successful operations
+                            } else {
+                                egui::Color32::from_rgb(240, 240, 240) // Very light gray/white for normal status
+                            };
+                            
+                            ui.colored_label(text_color, &self.status_text);
                         }
                     });
                 });
@@ -201,6 +233,65 @@ impl eframe::App for ImageViewerApp {
 }
 
 impl ImageViewerApp {
+    fn recolor_svg_simple(&self, svg_content: &str) -> String {
+        if !self.settings.svg_recolor_enabled {
+            return svg_content.to_string();
+        }
+
+        let target_hex = format!(
+            "#{:02x}{:02x}{:02x}",
+            self.settings.svg_target_color[0],
+            self.settings.svg_target_color[1],
+            self.settings.svg_target_color[2]
+        );
+
+        println!("SVG Recoloring enabled! Target color: {}", target_hex);
+        println!("Original SVG preview: {}", &svg_content[..std::cmp::min(200, svg_content.len())]);
+
+        let mut result = svg_content.to_string();
+        let mut changes_made = 0;
+        
+        if result.contains("currentColor") {
+            result = result.replace("currentColor", &target_hex);
+            changes_made += result.matches(&target_hex).count();
+            println!("Replaced currentColor with {}, {} instances", target_hex, changes_made);
+        }
+        
+        // Replace fill colors (but preserve "none" and gradients)
+        let fill_regex = regex::Regex::new(r#"fill="(#[0-9a-fA-F]{6}|#[0-9a-fA-F]{3}|black|white|red|green|blue|yellow|cyan|magenta|purple|orange|brown|pink|gray|grey)""#).unwrap();
+        let before_count = result.len();
+        result = fill_regex.replace_all(&result, &format!(r#"fill="{}""#, target_hex)).to_string();
+        if result.len() != before_count {
+            changes_made += 1;
+            println!("Replaced fill colors");
+        }
+            
+        // Replace stroke colors
+        let stroke_regex = regex::Regex::new(r#"stroke="(#[0-9a-fA-F]{6}|#[0-9a-fA-F]{3}|black|white|red|green|blue|yellow|cyan|magenta|purple|orange|brown|pink|gray|grey)""#).unwrap();
+        let before_count = result.len();
+        result = stroke_regex.replace_all(&result, &format!(r#"stroke="{}""#, target_hex)).to_string();
+        if result.len() != before_count {
+            changes_made += 1;
+            println!("Replaced stroke colors");
+        }
+
+        // Handle CSS style attributes
+        let style_regex = regex::Regex::new(r#"style="[^"]*(?:fill|stroke):\s*(#[0-9a-fA-F]{6}|#[0-9a-fA-F]{3}|black|white|red|green|blue|yellow|cyan|magenta|currentColor)[^"]*""#).unwrap();
+        let before_count = result.len();
+        result = style_regex.replace_all(&result, &format!(r#"style="fill: {}; stroke: {};""#, target_hex, target_hex)).to_string();
+        if result.len() != before_count {
+            changes_made += 1;
+            println!("Replaced CSS style colors");
+        }
+
+        println!("Total changes made: {}", changes_made);
+        if changes_made > 0 {
+            println!("Modified SVG preview: {}", &result[..std::cmp::min(200, result.len())]);
+        }
+
+        result
+    }
+
     fn should_skip_large_file(&self, path: &PathBuf) -> Option<String> {
         if let Some(max_mb) = self.settings.max_file_size_mb {
             if let Ok(metadata) = std::fs::metadata(path) {
@@ -257,8 +348,12 @@ impl ImageViewerApp {
 
                 let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
                 if extension == "svg" {
-                    match std::fs::read(path) {
-                        Ok(svg_bytes) => {
+                    match std::fs::read_to_string(path) {
+                        Ok(svg_content) => {
+                            // Apply recoloring if enabled
+                            let processed_svg = self.recolor_svg_simple(&svg_content);
+                            let svg_bytes = processed_svg.as_bytes();
+                            
                             let mut fontdb = usvg::fontdb::Database::new();
                             fontdb.load_system_fonts();
                             
@@ -267,7 +362,7 @@ impl ImageViewerApp {
                                 ..Default::default()
                             };
                             
-                            match usvg::Tree::from_data(&svg_bytes, &options) {
+                            match usvg::Tree::from_data(svg_bytes, &options) {
                                 Ok(usvg_tree) => {
                                     let original_size = usvg_tree.size().to_int_size();
                                     let mut pixmap_size = original_size;
@@ -328,15 +423,25 @@ impl ImageViewerApp {
                                     ));
                                     
                                     // Update status to show if SVG was scaled
+                                    let recolor_status = if self.settings.svg_recolor_enabled {
+                                        format!(" (recolored to #{:02x}{:02x}{:02x})", 
+                                            self.settings.svg_target_color[0],
+                                            self.settings.svg_target_color[1], 
+                                            self.settings.svg_target_color[2])
+                                    } else {
+                                        String::new()
+                                    };
+                                    
                                     if scale_factor < 1.0 {
                                         self.status_text = format!(
-                                            "Loaded SVG (scaled from {}x{} to {}x{}): {}", 
+                                            "Loaded SVG (scaled from {}x{} to {}x{}){}: {}", 
                                             original_size.width(), original_size.height(),
                                             pixmap_size.width(), pixmap_size.height(),
+                                            recolor_status,
                                             path.to_string_lossy()
                                         );
                                     } else {
-                                        self.status_text = format!("Loaded SVG: {}", path.to_string_lossy());
+                                        self.status_text = format!("Loaded SVG{}: {}", recolor_status, path.to_string_lossy());
                                     }
                                 }
                                 Err(e) => {
