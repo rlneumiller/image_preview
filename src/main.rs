@@ -74,12 +74,20 @@ impl eframe::App for ImageViewerApp {
                 });
 
             egui::CentralPanel::default().show_inside(ui, |ui| {
-                ui.vertical_centered(|ui| {
-                    if let Some(texture) = &self.image_texture {
-                        ui.image(texture);
-                    } else {
-                        ui.label(&self.status_text);
-                    }
+                // Set a neutral grey background for the image preview area
+                ui.style_mut().visuals.extreme_bg_color = egui::Color32::from_gray(128);
+                let frame = egui::Frame::default()
+                    .fill(egui::Color32::from_gray(128))
+                    .inner_margin(egui::Margin::same(10.0));
+                
+                frame.show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        if let Some(texture) = &self.image_texture {
+                            ui.image(texture);
+                        } else {
+                            ui.label(&self.status_text);
+                        }
+                    });
                 });
             });
         });
@@ -89,6 +97,23 @@ impl eframe::App for ImageViewerApp {
 }
 
 impl ImageViewerApp {
+    const MAX_TEXTURE_SIZE: u32 = 16384;
+
+    fn scale_image_if_needed(img: image::DynamicImage) -> image::DynamicImage {
+        let (width, height) = (img.width(), img.height());
+        
+        if width <= Self::MAX_TEXTURE_SIZE && height <= Self::MAX_TEXTURE_SIZE {
+            return img;
+        }
+
+        // Calculate scale factor to fit within MAX_TEXTURE_SIZE
+        let scale_factor = (Self::MAX_TEXTURE_SIZE as f32 / width.max(height) as f32).min(1.0);
+        let new_width = (width as f32 * scale_factor) as u32;
+        let new_height = (height as f32 * scale_factor) as u32;
+
+        img.resize(new_width, new_height, image::imageops::FilterType::Lanczos3)
+    }
+
     fn load_selected_image(&mut self, ctx: &egui::Context) {
         if let Some(index) = self.selected_image_index {
             if let Some(path) = self.image_paths.get(index) {
@@ -106,13 +131,35 @@ impl ImageViewerApp {
                             
                             match usvg::Tree::from_data(&svg_bytes, &options) {
                                 Ok(usvg_tree) => {
-                                    let pixmap_size = usvg_tree.size().to_int_size();
+                                    let original_size = usvg_tree.size().to_int_size();
+                                    let mut pixmap_size = original_size;
+                                    
+                                    // Scale down SVG if it's too large for texture
+                                    let scale_factor = if original_size.width() > Self::MAX_TEXTURE_SIZE || original_size.height() > Self::MAX_TEXTURE_SIZE {
+                                        (Self::MAX_TEXTURE_SIZE as f32 / original_size.width().max(original_size.height()) as f32).min(1.0)
+                                    } else {
+                                        1.0
+                                    };
+                                    
+                                    if scale_factor < 1.0 {
+                                        pixmap_size = tiny_skia::IntSize::from_wh(
+                                            (original_size.width() as f32 * scale_factor) as u32,
+                                            (original_size.height() as f32 * scale_factor) as u32,
+                                        ).unwrap();
+                                    }
+                                    
                                     let mut pixmap = tiny_skia::Pixmap::new(
                                         pixmap_size.width(),
                                         pixmap_size.height(),
                                     ).unwrap();
                                     
-                                    resvg::render(&usvg_tree, tiny_skia::Transform::identity(), &mut pixmap.as_mut());
+                                    let transform = if scale_factor < 1.0 {
+                                        tiny_skia::Transform::from_scale(scale_factor, scale_factor)
+                                    } else {
+                                        tiny_skia::Transform::identity()
+                                    };
+                                    
+                                    resvg::render(&usvg_tree, transform, &mut pixmap.as_mut());
                                     
                                     let image_buffer = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(
                                         pixmap.width(),
@@ -131,7 +178,18 @@ impl ImageViewerApp {
                                         color_image,
                                         Default::default(),
                                     ));
-                                    self.status_text = format!("Loaded SVG: {}", path.to_string_lossy());
+                                    
+                                    // Update status to show if SVG was scaled
+                                    if scale_factor < 1.0 {
+                                        self.status_text = format!(
+                                            "Loaded SVG (scaled from {}x{} to {}x{}): {}", 
+                                            original_size.width(), original_size.height(),
+                                            pixmap_size.width(), pixmap_size.height(),
+                                            path.to_string_lossy()
+                                        );
+                                    } else {
+                                        self.status_text = format!("Loaded SVG: {}", path.to_string_lossy());
+                                    }
                                 }
                                 Err(e) => {
                                     self.status_text = format!("Error parsing SVG: {}", e);
@@ -148,8 +206,13 @@ impl ImageViewerApp {
                     match ImageReader::open(path) {
                         Ok(reader) => match reader.decode() {
                             Ok(img) => {
-                                let size = [img.width() as _, img.height() as _];
-                                let rgba = img.to_rgba8();
+                                // Store original dimensions before moving img
+                                let (orig_width, orig_height) = (img.width(), img.height());
+                                
+                                // Scale down large images to prevent texture size errors
+                                let scaled_img = Self::scale_image_if_needed(img);
+                                let size = [scaled_img.width() as _, scaled_img.height() as _];
+                                let rgba = scaled_img.to_rgba8();
                                 let pixels = rgba.as_flat_samples();
                                 let color_image = ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
                                 self.image_texture = Some(ctx.load_texture(
@@ -157,7 +220,18 @@ impl ImageViewerApp {
                                     color_image,
                                     Default::default(),
                                 ));
-                                self.status_text = format!("Loaded: {}", path.to_string_lossy());
+                                
+                                // Update status to show if image was scaled
+                                if scaled_img.width() != orig_width || scaled_img.height() != orig_height {
+                                    self.status_text = format!(
+                                        "Loaded (scaled from {}x{} to {}x{}): {}", 
+                                        orig_width, orig_height,
+                                        scaled_img.width(), scaled_img.height(),
+                                        path.to_string_lossy()
+                                    );
+                                } else {
+                                    self.status_text = format!("Loaded: {}", path.to_string_lossy());
+                                }
                             }
                             Err(e) => {
                                 self.status_text = format!("Error decoding image: {}", e);
