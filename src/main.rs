@@ -20,11 +20,68 @@ fn main() -> Result<(), eframe::Error> {
     )
 }
 
+#[derive(Debug, Clone)]
+struct ImageLoadingSettings {
+    max_texture_size: u32,
+    skip_large_images: bool,
+    auto_scale_large_images: bool,
+    max_file_size_mb: Option<u32>, // None means no limit
+    supported_formats: Vec<String>,
+}
+
+impl Default for ImageLoadingSettings {
+    fn default() -> Self {
+        Self {
+            max_texture_size: 16384,
+            skip_large_images: false,
+            auto_scale_large_images: true,
+            max_file_size_mb: Some(100), // 100MB default limit
+            supported_formats: vec![
+                "png".to_string(),
+                "jpg".to_string(),
+                "jpeg".to_string(),
+                "svg".to_string(),
+                "bmp".to_string(),
+            ],
+        }
+    }
+}
+
+impl ImageLoadingSettings {
+    pub fn skip_large_images(mut self, skip: bool) -> Self {
+        self.skip_large_images = skip;
+        if skip {
+            self.auto_scale_large_images = false;
+        }
+        self
+    }
+
+    pub fn auto_scale_large_images(mut self, auto_scale: bool) -> Self {
+        self.auto_scale_large_images = auto_scale;
+        if auto_scale {
+            self.skip_large_images = false;
+        }
+        self
+    }
+
+    pub fn max_file_size_mb(mut self, size_mb: Option<u32>) -> Self {
+        self.max_file_size_mb = size_mb;
+        self
+    }
+
+    pub fn max_texture_size(mut self, size: u32) -> Self {
+        self.max_texture_size = size;
+        self
+    }
+}
+
 struct ImageViewerApp {
     image_paths: Vec<PathBuf>,
     selected_image_index: Option<usize>,
     image_texture: Option<TextureHandle>,
     status_text: String,
+    settings: ImageLoadingSettings,
+    show_settings: bool,
 }
 
 impl Default for ImageViewerApp {
@@ -46,12 +103,59 @@ impl Default for ImageViewerApp {
             selected_image_index: None,
             image_texture: None,
             status_text: "Welcome to the Image Viewer!".to_string(),
+            settings: ImageLoadingSettings::default(),
+            show_settings: false,
         }
     }
 }
 
 impl eframe::App for ImageViewerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Top menu bar
+        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
+            egui::menu::bar(ui, |ui| {
+                ui.menu_button("Settings", |ui| {
+                    if ui.button("Image Loading Settings").clicked() {
+                        self.show_settings = !self.show_settings;
+                    }
+                });
+            });
+        });
+
+        // Settings window
+        if self.show_settings {
+            egui::Window::new("Image Loading Settings")
+                .open(&mut self.show_settings)
+                .show(ctx, |ui| {
+                    ui.checkbox(&mut self.settings.skip_large_images, "Skip very large images");
+                    ui.checkbox(&mut self.settings.auto_scale_large_images, "Auto-scale large images");
+                    
+                    if self.settings.skip_large_images {
+                        self.settings.auto_scale_large_images = false;
+                    } else if self.settings.auto_scale_large_images {
+                        self.settings.skip_large_images = false;
+                    }
+
+                    ui.separator();
+                    
+                    ui.horizontal(|ui| {
+                        ui.label("Max texture size:");
+                        ui.add(egui::Slider::new(&mut self.settings.max_texture_size, 1024..=32768));
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Max file size (MB):");
+                        let mut max_size = self.settings.max_file_size_mb.unwrap_or(0);
+                        if ui.add(egui::Slider::new(&mut max_size, 1..=1000)).changed() {
+                            self.settings.max_file_size_mb = if max_size > 0 { Some(max_size) } else { None };
+                        }
+                        if ui.button("No limit").clicked() {
+                            self.settings.max_file_size_mb = None;
+                        }
+                    });
+                });
+        }
+
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::SidePanel::left("image_list_panel")
                 .resizable(true)
@@ -97,26 +201,60 @@ impl eframe::App for ImageViewerApp {
 }
 
 impl ImageViewerApp {
-    const MAX_TEXTURE_SIZE: u32 = 16384;
+    fn should_skip_large_file(&self, path: &PathBuf) -> Option<String> {
+        if let Some(max_mb) = self.settings.max_file_size_mb {
+            if let Ok(metadata) = std::fs::metadata(path) {
+                let size_mb = metadata.len() / (1024 * 1024);
+                if size_mb > max_mb as u64 {
+                    return Some(format!(
+                        "Skipped large file ({} MB > {} MB limit): {}",
+                        size_mb, max_mb, path.to_string_lossy()
+                    ));
+                }
+            }
+        }
+        None
+    }
 
-    fn scale_image_if_needed(img: image::DynamicImage) -> image::DynamicImage {
+    fn scale_image_if_needed(&self, img: image::DynamicImage) -> Result<image::DynamicImage, String> {
         let (width, height) = (img.width(), img.height());
         
-        if width <= Self::MAX_TEXTURE_SIZE && height <= Self::MAX_TEXTURE_SIZE {
-            return img;
+        if width <= self.settings.max_texture_size && height <= self.settings.max_texture_size {
+            return Ok(img);
         }
 
-        // Calculate scale factor to fit within MAX_TEXTURE_SIZE
-        let scale_factor = (Self::MAX_TEXTURE_SIZE as f32 / width.max(height) as f32).min(1.0);
-        let new_width = (width as f32 * scale_factor) as u32;
-        let new_height = (height as f32 * scale_factor) as u32;
+        if self.settings.skip_large_images {
+            return Err(format!(
+                "Image too large ({}x{} > {}x{} limit)", 
+                width, height, self.settings.max_texture_size, self.settings.max_texture_size
+            ));
+        }
 
-        img.resize(new_width, new_height, image::imageops::FilterType::Lanczos3)
+        if self.settings.auto_scale_large_images {
+            // Calculate scale factor to fit within MAX_TEXTURE_SIZE
+            let scale_factor = (self.settings.max_texture_size as f32 / width.max(height) as f32).min(1.0);
+            let new_width = (width as f32 * scale_factor) as u32;
+            let new_height = (height as f32 * scale_factor) as u32;
+
+            Ok(img.resize(new_width, new_height, image::imageops::FilterType::Lanczos3))
+        } else {
+            Err(format!(
+                "Image too large ({}x{} > {}x{} limit) and auto-scaling disabled", 
+                width, height, self.settings.max_texture_size, self.settings.max_texture_size
+            ))
+        }
     }
 
     fn load_selected_image(&mut self, ctx: &egui::Context) {
         if let Some(index) = self.selected_image_index {
             if let Some(path) = self.image_paths.get(index) {
+                // Check file size first
+                if let Some(skip_message) = self.should_skip_large_file(path) {
+                    self.status_text = skip_message;
+                    self.image_texture = None;
+                    return;
+                }
+
                 let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
                 if extension == "svg" {
                     match std::fs::read(path) {
@@ -135,8 +273,18 @@ impl ImageViewerApp {
                                     let mut pixmap_size = original_size;
                                     
                                     // Scale down SVG if it's too large for texture
-                                    let scale_factor = if original_size.width() > Self::MAX_TEXTURE_SIZE || original_size.height() > Self::MAX_TEXTURE_SIZE {
-                                        (Self::MAX_TEXTURE_SIZE as f32 / original_size.width().max(original_size.height()) as f32).min(1.0)
+                                    let scale_factor = if original_size.width() > self.settings.max_texture_size || original_size.height() > self.settings.max_texture_size {
+                                        if self.settings.skip_large_images {
+                                            self.status_text = format!(
+                                                "Skipped large SVG ({}x{} > {}x{} limit): {}", 
+                                                original_size.width(), original_size.height(),
+                                                self.settings.max_texture_size, self.settings.max_texture_size,
+                                                path.to_string_lossy()
+                                            );
+                                            self.image_texture = None;
+                                            return;
+                                        }
+                                        (self.settings.max_texture_size as f32 / original_size.width().max(original_size.height()) as f32).min(1.0)
                                     } else {
                                         1.0
                                     };
@@ -210,27 +358,34 @@ impl ImageViewerApp {
                                 let (orig_width, orig_height) = (img.width(), img.height());
                                 
                                 // Scale down large images to prevent texture size errors
-                                let scaled_img = Self::scale_image_if_needed(img);
-                                let size = [scaled_img.width() as _, scaled_img.height() as _];
-                                let rgba = scaled_img.to_rgba8();
-                                let pixels = rgba.as_flat_samples();
-                                let color_image = ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
-                                self.image_texture = Some(ctx.load_texture(
-                                    path.to_string_lossy(),
-                                    color_image,
-                                    Default::default(),
-                                ));
-                                
-                                // Update status to show if image was scaled
-                                if scaled_img.width() != orig_width || scaled_img.height() != orig_height {
-                                    self.status_text = format!(
-                                        "Loaded (scaled from {}x{} to {}x{}): {}", 
-                                        orig_width, orig_height,
-                                        scaled_img.width(), scaled_img.height(),
-                                        path.to_string_lossy()
-                                    );
-                                } else {
-                                    self.status_text = format!("Loaded: {}", path.to_string_lossy());
+                                match self.scale_image_if_needed(img) {
+                                    Ok(scaled_img) => {
+                                        let size = [scaled_img.width() as _, scaled_img.height() as _];
+                                        let rgba = scaled_img.to_rgba8();
+                                        let pixels = rgba.as_flat_samples();
+                                        let color_image = ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
+                                        self.image_texture = Some(ctx.load_texture(
+                                            path.to_string_lossy(),
+                                            color_image,
+                                            Default::default(),
+                                        ));
+                                        
+                                        // Update status to show if image was scaled
+                                        if scaled_img.width() != orig_width || scaled_img.height() != orig_height {
+                                            self.status_text = format!(
+                                                "Loaded (scaled from {}x{} to {}x{}): {}", 
+                                                orig_width, orig_height,
+                                                scaled_img.width(), scaled_img.height(),
+                                                path.to_string_lossy()
+                                            );
+                                        } else {
+                                            self.status_text = format!("Loaded: {}", path.to_string_lossy());
+                                        }
+                                    }
+                                    Err(error_msg) => {
+                                        self.status_text = error_msg;
+                                        self.image_texture = None;
+                                    }
                                 }
                             }
                             Err(e) => {
