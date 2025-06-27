@@ -14,7 +14,7 @@ fn main() -> Result<(), eframe::Error> {
         ..Default::default()
     };
     eframe::run_native(
-        "Image Viewer",
+        "Image PreViewer",
         options,
         Box::new(|_cc| Ok(Box::<ImageViewerApp>::default())),
     )

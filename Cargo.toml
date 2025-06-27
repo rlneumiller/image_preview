@@ -1,5 +1,5 @@
 [package]
-name = "image_viewer"
+name = "image_previewer"
 version = "0.1.0"
 edition = "2024"
 
