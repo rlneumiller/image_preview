@@ -4,7 +4,9 @@ use eframe::egui;
 use egui::{ColorImage, TextureHandle};
 use glob::glob;
 use image::ImageReader;
+use resvg::{tiny_skia, usvg};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
@@ -90,28 +92,82 @@ impl ImageViewerApp {
     fn load_selected_image(&mut self, ctx: &egui::Context) {
         if let Some(index) = self.selected_image_index {
             if let Some(path) = self.image_paths.get(index) {
-                match ImageReader::open(path) {
-                    Ok(reader) => match reader.decode() {
-                        Ok(img) => {
-                            let size = [img.width() as _, img.height() as _];
-                            let rgba = img.to_rgba8();
-                            let pixels = rgba.as_flat_samples();
-                            let color_image = ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
-                            self.image_texture = Some(ctx.load_texture(
-                                path.to_string_lossy(),
-                                color_image,
-                                Default::default(),
-                            ));
-                            self.status_text = format!("Loaded: {}", path.to_string_lossy());
+                let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+                if extension == "svg" {
+                    match std::fs::read(path) {
+                        Ok(svg_bytes) => {
+                            let mut fontdb = usvg::fontdb::Database::new();
+                            fontdb.load_system_fonts();
+                            
+                            let options = usvg::Options {
+                                fontdb: Arc::new(fontdb),
+                                ..Default::default()
+                            };
+                            
+                            match usvg::Tree::from_data(&svg_bytes, &options) {
+                                Ok(usvg_tree) => {
+                                    let pixmap_size = usvg_tree.size().to_int_size();
+                                    let mut pixmap = tiny_skia::Pixmap::new(
+                                        pixmap_size.width(),
+                                        pixmap_size.height(),
+                                    ).unwrap();
+                                    
+                                    resvg::render(&usvg_tree, tiny_skia::Transform::identity(), &mut pixmap.as_mut());
+                                    
+                                    let image_buffer = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(
+                                        pixmap.width(),
+                                        pixmap.height(),
+                                        pixmap.take(),
+                                    ).unwrap();
+                                    
+                                    let size = [image_buffer.width() as _, image_buffer.height() as _];
+                                    let color_image = ColorImage::from_rgba_unmultiplied(
+                                        size,
+                                        image_buffer.as_flat_samples().as_slice(),
+                                    );
+                                    
+                                    self.image_texture = Some(ctx.load_texture(
+                                        path.to_string_lossy(),
+                                        color_image,
+                                        Default::default(),
+                                    ));
+                                    self.status_text = format!("Loaded SVG: {}", path.to_string_lossy());
+                                }
+                                Err(e) => {
+                                    self.status_text = format!("Error parsing SVG: {}", e);
+                                    self.image_texture = None;
+                                }
+                            }
                         }
                         Err(e) => {
-                            self.status_text = format!("Error decoding image: {}", e);
+                            self.status_text = format!("Error reading SVG: {}", e);
                             self.image_texture = None;
                         }
-                    },
-                    Err(e) => {
-                        self.status_text = format!("Error opening image: {}", e);
-                        self.image_texture = None;
+                    }
+                } else {
+                    match ImageReader::open(path) {
+                        Ok(reader) => match reader.decode() {
+                            Ok(img) => {
+                                let size = [img.width() as _, img.height() as _];
+                                let rgba = img.to_rgba8();
+                                let pixels = rgba.as_flat_samples();
+                                let color_image = ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
+                                self.image_texture = Some(ctx.load_texture(
+                                    path.to_string_lossy(),
+                                    color_image,
+                                    Default::default(),
+                                ));
+                                self.status_text = format!("Loaded: {}", path.to_string_lossy());
+                            }
+                            Err(e) => {
+                                self.status_text = format!("Error decoding image: {}", e);
+                                self.image_texture = None;
+                            }
+                        },
+                        Err(e) => {
+                            self.status_text = format!("Error opening image: {}", e);
+                            self.image_texture = None;
+                        }
                     }
                 }
             }
