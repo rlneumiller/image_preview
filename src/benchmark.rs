@@ -400,13 +400,26 @@ pub fn find_safe_benchmark_images(limits: &BenchmarkLimits) -> Vec<PathBuf> {
     let mut safe_candidates: Vec<(PathBuf, f64)> = candidates
         .into_iter()
         .filter_map(|path| {
+            // Check OneDrive status first to avoid triggering downloads
+            let file_info = FileInfo::new(path.clone());
+            if file_info.will_trigger_download() {
+                return None; // Skip OneDrive files completely
+            }
+            
             // Check file size
             if let Ok(metadata) = std::fs::metadata(&path) {
                 let file_size_mb = metadata.len() as f64 / (1024.0 * 1024.0);
                 
                 // Only include files within safe size limits
                 if file_size_mb <= limits.max_file_size_mb {
+                    // Double-check OneDrive status before any file operations
+                    let file_info_check = FileInfo::new(path.clone());
+                    if file_info_check.will_trigger_download() {
+                        return None; // Extra safety check
+                    }
+                    
                     // Try to get basic image info without fully loading
+                    // Even opening the file might trigger downloads for some OneDrive configurations
                     if let Ok(reader) = ImageReader::open(&path) {
                         if let Ok((width, height)) = reader.into_dimensions() {
                             let megapixels = (width as f64 * height as f64) / 1_000_000.0;

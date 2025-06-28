@@ -8,10 +8,19 @@ use resvg::{tiny_skia, usvg};
 use regex;
 
 use crate::settings::ImageLoadingSettings;
-use crate::benchmark::ImageCharacteristics;
 use crate::onedrive::FileInfo;
+use crate::benchmark::ImageCharacteristics;
 
 pub fn should_skip_large_file(path: &PathBuf, settings: &ImageLoadingSettings) -> Option<String> {
+    // Check OneDrive status first to avoid any potential file access issues
+    let file_info = FileInfo::new(path.clone());
+    if file_info.will_trigger_download() {
+        return Some(format!(
+            "Skipped OneDrive on-demand file: {}", 
+            path.to_string_lossy()
+        ));
+    }
+    
     if let Some(max_mb) = settings.max_file_size_mb {
         if let Ok(metadata) = std::fs::metadata(path) {
             let size_mb = metadata.len() / (1024 * 1024);
@@ -120,6 +129,12 @@ pub fn recolor_svg_simple(svg_content: &str, settings: &ImageLoadingSettings) ->
 }
 
 pub fn load_svg_image(path: &PathBuf, settings: &ImageLoadingSettings, ctx: &egui::Context) -> Result<TextureHandle, String> {
+    // Check OneDrive status first to avoid triggering downloads
+    let file_info = FileInfo::new(path.clone());
+    if file_info.will_trigger_download() {
+        return Err("Cannot load OneDrive on-demand file - would trigger download".to_string());
+    }
+    
     let svg_content = std::fs::read_to_string(path)
         .map_err(|e| format!("Failed to read SVG file: {}", e))?;
     
@@ -190,6 +205,12 @@ pub fn load_svg_image(path: &PathBuf, settings: &ImageLoadingSettings, ctx: &egu
 }
 
 pub fn load_raster_image(path: &PathBuf, settings: &ImageLoadingSettings, ctx: &egui::Context) -> Result<TextureHandle, String> {
+    // Check OneDrive status first to avoid triggering downloads
+    let file_info = FileInfo::new(path.clone());
+    if file_info.will_trigger_download() {
+        return Err("Cannot load OneDrive on-demand file - would trigger download".to_string());
+    }
+    
     let img = ImageReader::open(path)
         .map_err(|e| format!("Failed to open image: {}", e))?
         .decode()

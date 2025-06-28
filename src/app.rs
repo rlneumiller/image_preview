@@ -57,7 +57,7 @@ impl Default for ImageViewerApp {
             benchmark_in_progress: false,
             benchmark_threshold_ms: 2000.0, // 2 seconds
             run_benchmark_trigger: false,
-            auto_benchmark_on_startup: true,
+            auto_benchmark_on_startup: false, // Disabled by default to avoid OneDrive issues
             show_slow_image_dialog: false,
             pending_slow_image_path: None,
             pending_slow_image_estimated_time: 0.0,
@@ -146,6 +146,10 @@ impl ImageViewerApp {
                             }
                         });
                     }
+                    
+                    ui.separator();
+                    ui.heading("Debug Options");
+                    ui.checkbox(&mut self.settings.debug_onedrive_detection, "Debug OneDrive detection");
                 });
         }
     }

@@ -11,6 +11,7 @@ pub struct ImageLoadingSettings {
     pub supported_formats: Vec<String>,
     pub svg_recolor_enabled: bool,
     pub svg_target_color: [u8; 3], // RGB values
+    pub debug_onedrive_detection: bool, // Show debug info for OneDrive file detection
 }
 
 impl Default for ImageLoadingSettings {
@@ -26,6 +27,7 @@ impl Default for ImageLoadingSettings {
                 .collect(),
             svg_recolor_enabled: false,
             svg_target_color: [128, 128, 128], // Default gray
+            debug_onedrive_detection: false, // Disabled by default
         }
     }
 }
