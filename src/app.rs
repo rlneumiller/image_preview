@@ -36,8 +36,8 @@ pub struct ImageViewerApp {
 impl Default for ImageViewerApp {
     fn default() -> Self {
         let mut file_infos = vec![];
-        let extensions = ["png", "jpg", "jpeg", "svg", "bmp", "gif"];
-        for ext in extensions.iter() {
+        let settings = ImageLoadingSettings::default();
+        for ext in settings.supported_formats.iter() {
             if let Ok(paths) = glob(&format!("*.{}", ext)) {
                 for entry in paths.flatten() {
                     file_infos.push(FileInfo::new(entry));
@@ -50,7 +50,7 @@ impl Default for ImageViewerApp {
             selected_image_index: None,
             image_texture: None,
             status_text: "Select an image".to_string(),
-            settings: ImageLoadingSettings::default(),
+            settings,
             show_settings: false,
             performance_profile: PerformanceProfile::default(),
             show_benchmark_window: false,

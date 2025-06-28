@@ -9,6 +9,7 @@ use glob::glob;
 use image::ImageReader;
 
 use crate::onedrive::FileInfo;
+use crate::settings::DEFAULT_SUPPORTED_FORMATS;
 
 // Performance categories based on simple CPU benchmark
 #[derive(Debug, Clone, PartialEq)]
@@ -362,13 +363,11 @@ pub fn get_performance_baseline() -> SystemPerformanceCategory {
 }
 
 pub fn find_safe_benchmark_images(limits: &BenchmarkLimits) -> Vec<PathBuf> {
-    let extensions = ["png", "jpg", "jpeg", "bmp", "gif"];
-    
     // Collect all potential images
     let mut candidates = Vec::new();
     
     // Check assets folder first
-    for ext in extensions.iter() {
+    for ext in DEFAULT_SUPPORTED_FORMATS.iter() {
         if let Ok(paths) = glob(&format!("assets/*.{}", ext)) {
             for entry in paths {
                 if let Ok(path) = entry {
@@ -383,7 +382,7 @@ pub fn find_safe_benchmark_images(limits: &BenchmarkLimits) -> Vec<PathBuf> {
     
     // If no assets folder images found, use current directory images
     if candidates.is_empty() {
-        for ext in extensions.iter() {
+        for ext in DEFAULT_SUPPORTED_FORMATS.iter() {
             if let Ok(paths) = glob(&format!("*.{}", ext)) {
                 for entry in paths {
                     if let Ok(path) = entry {

@@ -1,5 +1,7 @@
 //! Image loading settings and configuration
 
+pub const DEFAULT_SUPPORTED_FORMATS: &[&str] = &["png", "jpg", "jpeg", "svg", "bmp", "gif"];
+
 #[derive(Debug, Clone)]
 pub struct ImageLoadingSettings {
     pub max_texture_size: u32,
@@ -18,14 +20,10 @@ impl Default for ImageLoadingSettings {
             skip_large_images: false,
             auto_scale_large_images: true,
             max_file_size_mb: Some(100), // 100MB default limit
-            supported_formats: vec![
-                "png".to_string(),
-                "jpg".to_string(),
-                "jpeg".to_string(),
-                "svg".to_string(),
-                "bmp".to_string(),
-                "gif".to_string(),
-            ],
+            supported_formats: DEFAULT_SUPPORTED_FORMATS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             svg_recolor_enabled: false,
             svg_target_color: [128, 128, 128], // Default gray
         }
@@ -57,5 +55,9 @@ impl ImageLoadingSettings {
     pub fn max_texture_size(mut self, size: u32) -> Self {
         self.max_texture_size = size;
         self
+    }
+
+    pub fn get_supported_extensions(&self) -> &[String] {
+        &self.supported_formats
     }
 }
