@@ -4,7 +4,6 @@ pub const DEFAULT_SUPPORTED_FORMATS: &[&str] = &["png", "jpg", "jpeg", "svg", "b
 
 #[derive(Debug, Clone)]
 pub struct ImageLoadingSettings {
-    pub max_texture_size: u32,
     pub skip_large_images: bool,
     pub auto_scale_large_images: bool,
     pub auto_scale_to_fit: bool, // Scale images to fit within the display frame
@@ -17,7 +16,6 @@ pub struct ImageLoadingSettings {
 impl Default for ImageLoadingSettings {
     fn default() -> Self {
         Self {
-            max_texture_size: 16384,
             skip_large_images: false,
             auto_scale_large_images: true,
             auto_scale_to_fit: true, // Enabled by default
@@ -51,11 +49,6 @@ impl ImageLoadingSettings {
 
     pub fn max_file_size_mb(mut self, size_mb: Option<u32>) -> Self {
         self.max_file_size_mb = size_mb;
-        self
-    }
-
-    pub fn max_texture_size(mut self, size: u32) -> Self {
-        self.max_texture_size = size;
         self
     }
 

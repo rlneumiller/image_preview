@@ -118,11 +118,6 @@ impl ImageViewerApp {
                     ui.separator();
                     
                     ui.horizontal(|ui| {
-                        ui.label("Max texture size:");
-                        ui.add(egui::Slider::new(&mut self.settings.max_texture_size, 16..=32768));
-                    });
-
-                    ui.horizontal(|ui| {
                         ui.label("Max file size (MB):");
                         let mut max_size = self.settings.max_file_size_mb.unwrap_or(0);
                         if ui.add(egui::Slider::new(&mut max_size, 1..=10)).changed() {

@@ -27,30 +27,35 @@ pub fn should_skip_large_file(path: &PathBuf, settings: &ImageLoadingSettings) -
 }
 
 pub fn scale_image_if_needed(img: image::DynamicImage, settings: &ImageLoadingSettings) -> Result<image::DynamicImage, String> {
+    // With max_texture_size removed, we'll only scale if auto_scale_large_images is enabled
+    // and the image is considered "large" (using a reasonable default threshold)
     let (width, height) = (img.width(), img.height());
     
-    if width <= settings.max_texture_size && height <= settings.max_texture_size {
+    // Use a reasonable default threshold for "large" images (e.g., 8192x8192)
+    const LARGE_IMAGE_THRESHOLD: u32 = 8192;
+    
+    if width <= LARGE_IMAGE_THRESHOLD && height <= LARGE_IMAGE_THRESHOLD {
         return Ok(img);
     }
 
     if settings.skip_large_images {
         return Err(format!(
-            "Image too large ({}x{} > {}x{} limit)", 
-            width, height, settings.max_texture_size, settings.max_texture_size
+            "Image too large ({}x{} > {}x{} threshold)", 
+            width, height, LARGE_IMAGE_THRESHOLD, LARGE_IMAGE_THRESHOLD
         ));
     }
 
     if settings.auto_scale_large_images {
-        // Calculate scale factor to fit within MAX_TEXTURE_SIZE
-        let scale_factor = (settings.max_texture_size as f32 / width.max(height) as f32).min(1.0);
+        // Calculate scale factor to fit within threshold
+        let scale_factor = (LARGE_IMAGE_THRESHOLD as f32 / width.max(height) as f32).min(1.0);
         let new_width = (width as f32 * scale_factor) as u32;
         let new_height = (height as f32 * scale_factor) as u32;
 
         Ok(img.resize(new_width, new_height, image::imageops::FilterType::Lanczos3))
     } else {
         Err(format!(
-            "Image too large ({}x{} > {}x{} limit) and auto-scaling disabled", 
-            width, height, settings.max_texture_size, settings.max_texture_size
+            "Image too large ({}x{} > {}x{} threshold) and auto-scaling disabled", 
+            width, height, LARGE_IMAGE_THRESHOLD, LARGE_IMAGE_THRESHOLD
         ))
     }
 }
@@ -138,16 +143,17 @@ pub fn load_svg_image(path: &PathBuf, settings: &ImageLoadingSettings, ctx: &egu
     let height = size.height() as u32;
     
     // Apply scaling if needed
-    let (scaled_width, scaled_height) = if width > settings.max_texture_size || height > settings.max_texture_size {
+    const LARGE_SVG_THRESHOLD: u32 = 8192;
+    let (scaled_width, scaled_height) = if width > LARGE_SVG_THRESHOLD || height > LARGE_SVG_THRESHOLD {
         if settings.skip_large_images {
-            return Err(format!("SVG too large ({}x{} > {}x{} limit)", width, height, settings.max_texture_size, settings.max_texture_size));
+            return Err(format!("SVG too large ({}x{} > {}x{} threshold)", width, height, LARGE_SVG_THRESHOLD, LARGE_SVG_THRESHOLD));
         }
         
         if settings.auto_scale_large_images {
-            let scale_factor = (settings.max_texture_size as f32 / width.max(height) as f32).min(1.0);
+            let scale_factor = (LARGE_SVG_THRESHOLD as f32 / width.max(height) as f32).min(1.0);
             ((width as f32 * scale_factor) as u32, (height as f32 * scale_factor) as u32)
         } else {
-            return Err(format!("SVG too large ({}x{} > {}x{} limit) and auto-scaling disabled", width, height, settings.max_texture_size, settings.max_texture_size));
+            return Err(format!("SVG too large ({}x{} > {}x{} threshold) and auto-scaling disabled", width, height, LARGE_SVG_THRESHOLD, LARGE_SVG_THRESHOLD));
         }
     } else {
         (width, height)
