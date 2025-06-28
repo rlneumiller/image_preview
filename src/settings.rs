@@ -7,6 +7,7 @@ pub struct ImageLoadingSettings {
     pub max_texture_size: u32,
     pub skip_large_images: bool,
     pub auto_scale_large_images: bool,
+    pub auto_scale_to_fit: bool, // Scale images to fit within the display frame
     pub max_file_size_mb: Option<u32>, // None means no limit
     pub supported_formats: Vec<String>,
     pub svg_recolor_enabled: bool,
@@ -19,6 +20,7 @@ impl Default for ImageLoadingSettings {
             max_texture_size: 16384,
             skip_large_images: false,
             auto_scale_large_images: true,
+            auto_scale_to_fit: true, // Enabled by default
             max_file_size_mb: Some(100), // 100MB default limit
             supported_formats: DEFAULT_SUPPORTED_FORMATS
                 .iter()
@@ -54,6 +56,11 @@ impl ImageLoadingSettings {
 
     pub fn max_texture_size(mut self, size: u32) -> Self {
         self.max_texture_size = size;
+        self
+    }
+
+    pub fn auto_scale_to_fit(mut self, auto_scale: bool) -> Self {
+        self.auto_scale_to_fit = auto_scale;
         self
     }
 

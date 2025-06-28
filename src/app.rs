@@ -107,6 +107,7 @@ impl ImageViewerApp {
                 .show(ctx, |ui| {
                     ui.checkbox(&mut self.settings.skip_large_images, "Skip very large images");
                     ui.checkbox(&mut self.settings.auto_scale_large_images, "Auto-scale large images");
+                    ui.checkbox(&mut self.settings.auto_scale_to_fit, "Scale images to fit display");
                     
                     if self.settings.skip_large_images {
                         self.settings.auto_scale_large_images = false;
@@ -358,7 +359,21 @@ impl ImageViewerApp {
             frame.show(ui, |ui| {
                 ui.vertical_centered(|ui| {
                     if let Some(texture) = &self.image_texture {
-                        ui.image(texture);
+                        if self.settings.auto_scale_to_fit {
+                            // Calculate available space for the image
+                            let available_size = ui.available_size();
+                            let texture_size = texture.size_vec2();
+                            
+                            // Calculate scale factor to fit image within available space
+                            let scale_x = available_size.x / texture_size.x;
+                            let scale_y = available_size.y / texture_size.y;
+                            let scale = scale_x.min(scale_y).min(1.0); // Don't scale up, only down
+                            
+                            let scaled_size = texture_size * scale;
+                            ui.image((texture.id(), scaled_size));
+                        } else {
+                            ui.image(texture);
+                        }
                     } else {
                         // Customize status text color with good contrast against grey background
                         let text_color = if self.status_text.contains("Error") || self.status_text.contains("Skipped") {
