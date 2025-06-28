@@ -13,6 +13,3 @@ pub use app::ImageViewerApp;
 pub use settings::ImageLoadingSettings;
 pub use benchmark::{SystemPerformanceCategory, PerformanceProfile, BenchmarkResult};
 pub use onedrive::{OneDriveFileStatus, FileInfo};
-
-// Embedded reference JPG for performance benchmarking
-pub const REFERENCE_JPG_BYTES: &[u8] = include_bytes!("../assets/313KB-2295X1034.jpg");

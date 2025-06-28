@@ -9,7 +9,6 @@ use glob::glob;
 use image::ImageReader;
 
 use crate::onedrive::FileInfo;
-use crate::REFERENCE_JPG_BYTES;
 
 // Performance categories based on simple CPU benchmark
 #[derive(Debug, Clone, PartialEq)]
@@ -41,6 +40,44 @@ impl SystemPerformanceCategory {
             SystemPerformanceCategory::Excellent => "Excellent",
         }
     }
+    
+    /// Get safe benchmark limits for this performance category
+    pub fn safe_benchmark_limits(&self) -> BenchmarkLimits {
+        match self {
+            SystemPerformanceCategory::LowPower => BenchmarkLimits {
+                max_file_size_mb: 2.0,
+                max_megapixels: 4.0,   // 2048x2048 or equivalent
+                max_images_to_test: 3,
+            },
+            SystemPerformanceCategory::Moderate => BenchmarkLimits {
+                max_file_size_mb: 5.0,
+                max_megapixels: 8.0,   // ~2800x2800 or equivalent
+                max_images_to_test: 5,
+            },
+            SystemPerformanceCategory::Good => BenchmarkLimits {
+                max_file_size_mb: 10.0,
+                max_megapixels: 16.0,  // 4096x4096 or equivalent
+                max_images_to_test: 8,
+            },
+            SystemPerformanceCategory::High => BenchmarkLimits {
+                max_file_size_mb: 20.0,
+                max_megapixels: 32.0,  // ~5600x5600 or equivalent
+                max_images_to_test: 10,
+            },
+            SystemPerformanceCategory::Excellent => BenchmarkLimits {
+                max_file_size_mb: 50.0,
+                max_megapixels: 64.0,  // 8192x8192 or equivalent
+                max_images_to_test: 15,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BenchmarkLimits {
+    pub max_file_size_mb: f64,
+    pub max_megapixels: f64,
+    pub max_images_to_test: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -100,16 +137,8 @@ pub struct SystemCapabilities {
 
 #[derive(Debug, Clone)]
 pub struct PerformanceComparison {
-    pub performance_ratio: f64, // Current machine performance relative to build machine (1.0 = same, 0.5 = half speed, 2.0 = twice as fast)
+    pub performance_ratio: f64, // Current machine performance relative to baseline (1.0 = same, 0.5 = half speed, 2.0 = twice as fast)
     pub confidence_level: f64,  // 0.0 to 1.0, how confident we are in the estimate
-}
-
-#[derive(Debug, Clone)]
-pub struct ReferenceBenchmark {
-    pub image_characteristics: ImageCharacteristics,
-    pub build_machine_result: BenchmarkResult,
-    pub cpu_info: String,
-    pub gpu_info: String,
 }
 
 impl Default for PerformanceProfile {
@@ -213,85 +242,24 @@ impl PerformanceProfile {
         time_per_mp * characteristics.megapixels
     }
     
-    pub fn benchmark_reference_image(&mut self, ctx: &egui::Context) -> Option<BenchmarkResult> {
-        // Benchmark the embedded reference JPG
-        let start_time = Instant::now();
+    pub fn benchmark_safe_images(&mut self, ctx: &egui::Context) -> Vec<BenchmarkResult> {
+        let mut results = Vec::new();
         
-        // Try to decode the embedded image
-        let decode_start = Instant::now();
-        let decode_result = image::load_from_memory(REFERENCE_JPG_BYTES)
-            .map_err(|e| format!("Failed to decode reference image: {}", e));
-        let decode_time = decode_start.elapsed();
+        // Get system performance to determine safe limits
+        let cpu_score = run_simple_cpu_benchmark(); 
+        let performance_category = SystemPerformanceCategory::from_score(cpu_score);
+        let limits = performance_category.safe_benchmark_limits();
         
-        match decode_result {
-            Ok(img) => {
-                let (width, height) = (img.width(), img.height());
-                let reference_benchmark = get_reference_benchmark();
-                let characteristics = ImageCharacteristics {
-                    file_size_mb: reference_benchmark.image_characteristics.file_size_mb,
-                    width,
-                    height,
-                    megapixels: (width * height) as f64 / 1_000_000.0,
-                    format: "jpg".to_string(),
-                    bit_depth: None,
-                };
-                
-                // Try to create texture
-                let texture_start = Instant::now();
-                let texture_result = self.try_create_reference_texture(&img, ctx);
-                let texture_time = texture_start.elapsed();
-                
-                let total_time = start_time.elapsed();
-                
-                let result = match texture_result {
-                    Ok(_) => BenchmarkResult {
-                        characteristics,
-                        decode_time_ms: decode_time.as_secs_f64() * 1000.0,
-                        texture_creation_time_ms: texture_time.as_secs_f64() * 1000.0,
-                        total_time_ms: total_time.as_secs_f64() * 1000.0,
-                        success: true,
-                        error_message: None,
-                    },
-                    Err(e) => BenchmarkResult {
-                        characteristics,
-                        decode_time_ms: decode_time.as_secs_f64() * 1000.0,
-                        texture_creation_time_ms: texture_time.as_secs_f64() * 1000.0,
-                        total_time_ms: total_time.as_secs_f64() * 1000.0,
-                        success: false,
-                        error_message: Some(format!("Reference texture creation failed: {}", e)),
-                    }
-                };
-                
-                // Calculate performance comparison if successful
-                if result.success {
-                    let reference_benchmark = get_reference_benchmark();
-                    let performance_ratio = reference_benchmark.build_machine_result.total_time_ms / result.total_time_ms;
-                    self.reference_comparison = Some(PerformanceComparison {
-                        performance_ratio,
-                        confidence_level: 0.9, // High confidence since it's the same image
-                    });
-                }
-                
-                Some(result)
-            }
-            Err(e) => {
-                eprintln!("Failed to benchmark reference image: {}", e);
-                None
-            }
+        // Find safe images to benchmark
+        let safe_images = find_safe_benchmark_images(&limits);
+        
+        for path in safe_images {
+            let result = benchmark_image(&path, ctx);
+            results.push(result.clone());
+            self.add_benchmark_result(result);
         }
-    }
-    
-    fn try_create_reference_texture(&self, img: &image::DynamicImage, ctx: &egui::Context) -> Result<TextureHandle, String> {
-        let size = [img.width() as _, img.height() as _];
-        let rgba = img.to_rgba8();
-        let pixels = rgba.as_flat_samples();
-        let color_image = ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
         
-        Ok(ctx.load_texture(
-            "reference_benchmark_image",
-            color_image,
-            Default::default(),
-        ))
+        results
     }
 }
 
@@ -387,71 +355,26 @@ pub fn run_simple_cpu_benchmark() -> u32 {
     final_score.min(15_000).max(50)
 }
 
-// Function to get reference benchmark data based on current system performance
-pub fn get_reference_benchmark() -> ReferenceBenchmark {
-    // Run a simple CPU benchmark to categorize system performance
+// Function to get performance baseline based on current system performance
+pub fn get_performance_baseline() -> SystemPerformanceCategory {
     let cpu_score = run_simple_cpu_benchmark();
-    let performance_category = SystemPerformanceCategory::from_score(cpu_score);
-    
-    // Base timing values for a "Good" performance system (our reference)
-    let base_decode_time = 45.0; // ms
-    let base_texture_time = 15.0; // ms
-    
-    // Adjust timings based on performance category
-    let (decode_multiplier, texture_multiplier) = match performance_category {
-        SystemPerformanceCategory::LowPower => (3.0, 2.5),    // Much slower
-        SystemPerformanceCategory::Moderate => (1.8, 1.6),    // Slower
-        SystemPerformanceCategory::Good => (1.0, 1.0),        // Reference baseline
-        SystemPerformanceCategory::High => (0.7, 0.8),        // Faster
-        SystemPerformanceCategory::Excellent => (0.4, 0.6),   // Much faster
-    };
-    
-    let decode_time = base_decode_time * decode_multiplier;
-    let texture_time = base_texture_time * texture_multiplier;
-    let total_time = decode_time + texture_time;
-    
-    ReferenceBenchmark {
-        image_characteristics: ImageCharacteristics {
-            file_size_mb: 0.305, // ~313KB
-            width: 2295,
-            height: 1034,
-            megapixels: 2.373, // 2.295 * 1.034
-            format: "jpg".to_string(),
-            bit_depth: None,
-        },
-        build_machine_result: BenchmarkResult {
-            characteristics: ImageCharacteristics {
-                file_size_mb: 0.305,
-                width: 2295,
-                height: 1034,
-                megapixels: 2.373,
-                format: "jpg".to_string(),
-                bit_depth: None,
-            },
-            decode_time_ms: decode_time,
-            texture_creation_time_ms: texture_time,
-            total_time_ms: total_time,
-            success: true,
-            error_message: None,
-        },
-        cpu_info: format!("{} Performance (Score: {})", performance_category.description(), cpu_score),
-        gpu_info: "Integrated Graphics".to_string(),
-    }
+    SystemPerformanceCategory::from_score(cpu_score)
 }
 
-pub fn find_asset_images() -> Vec<PathBuf> {
-    let mut asset_paths = Vec::new();
+pub fn find_safe_benchmark_images(limits: &BenchmarkLimits) -> Vec<PathBuf> {
     let extensions = ["png", "jpg", "jpeg", "bmp", "gif"];
     
-    // Check assets folder
+    // Collect all potential images
+    let mut candidates = Vec::new();
+    
+    // Check assets folder first
     for ext in extensions.iter() {
         if let Ok(paths) = glob(&format!("assets/*.{}", ext)) {
             for entry in paths {
                 if let Ok(path) = entry {
-                    // Only include files that won't trigger OneDrive downloads
                     let file_info = FileInfo::new(path.clone());
                     if !file_info.will_trigger_download() {
-                        asset_paths.push(path);
+                        candidates.push(path);
                     }
                 }
             }
@@ -459,15 +382,14 @@ pub fn find_asset_images() -> Vec<PathBuf> {
     }
     
     // If no assets folder images found, use current directory images
-    if asset_paths.is_empty() {
+    if candidates.is_empty() {
         for ext in extensions.iter() {
             if let Ok(paths) = glob(&format!("*.{}", ext)) {
                 for entry in paths {
                     if let Ok(path) = entry {
-                        // Only include files that won't trigger OneDrive downloads
                         let file_info = FileInfo::new(path.clone());
                         if !file_info.will_trigger_download() {
-                            asset_paths.push(path);
+                            candidates.push(path);
                         }
                     }
                 }
@@ -475,7 +397,42 @@ pub fn find_asset_images() -> Vec<PathBuf> {
         }
     }
     
-    asset_paths
+    // Filter candidates by safety criteria and sort by size
+    let mut safe_candidates: Vec<(PathBuf, f64)> = candidates
+        .into_iter()
+        .filter_map(|path| {
+            // Check file size
+            if let Ok(metadata) = std::fs::metadata(&path) {
+                let file_size_mb = metadata.len() as f64 / (1024.0 * 1024.0);
+                
+                // Only include files within safe size limits
+                if file_size_mb <= limits.max_file_size_mb {
+                    // Try to get basic image info without fully loading
+                    if let Ok(reader) = ImageReader::open(&path) {
+                        if let Ok((width, height)) = reader.into_dimensions() {
+                            let megapixels = (width as f64 * height as f64) / 1_000_000.0;
+                            
+                            // Only include images within safe pixel limits
+                            if megapixels <= limits.max_megapixels {
+                                return Some((path, file_size_mb));
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        })
+        .collect();
+    
+    // Sort by file size (smaller first for safer testing)
+    safe_candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    
+    // Take only the specified number of test images
+    safe_candidates
+        .into_iter()
+        .take(limits.max_images_to_test)
+        .map(|(path, _)| path)
+        .collect()
 }
 
 pub fn benchmark_image(path: &PathBuf, ctx: &egui::Context) -> BenchmarkResult {

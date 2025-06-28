@@ -7,7 +7,7 @@ use egui::TextureHandle;
 use glob::glob;
 
 use crate::settings::ImageLoadingSettings;
-use crate::benchmark::{PerformanceProfile, SystemPerformanceCategory, run_simple_cpu_benchmark, find_asset_images, benchmark_image};
+use crate::benchmark::{PerformanceProfile, SystemPerformanceCategory, run_simple_cpu_benchmark};
 use crate::onedrive::FileInfo;
 use crate::image_processing::{should_skip_large_file, load_svg_image, load_raster_image, estimate_image_render_time};
 
@@ -627,28 +627,14 @@ impl ImageViewerApp {
         self.performance_profile.benchmark_results.clear();
         self.performance_profile.last_benchmark_time = Some(Instant::now());
         
-        // Find asset images to benchmark
-        let asset_paths = find_asset_images();
-        
-        // Benchmark each asset image
-        for path in asset_paths {
-            let result = benchmark_image(&path, ctx);
-            self.performance_profile.add_benchmark_result(result);
-        }
-        
-        // Benchmark reference image
-        if let Some(reference_result) = self.performance_profile.benchmark_reference_image(ctx) {
-            self.performance_profile.add_benchmark_result(reference_result);
-        }
+        // Run safe benchmarks using existing images
+        let results = self.performance_profile.benchmark_safe_images(ctx);
         
         self.benchmark_in_progress = false;
         
         // Update status
-        let successful_count = self.performance_profile.benchmark_results
-            .iter()
-            .filter(|r| r.success)
-            .count();
-        let total_count = self.performance_profile.benchmark_results.len();
+        let successful_count = results.iter().filter(|r| r.success).count();
+        let total_count = results.len();
         
         self.status_text = format!(
             "Benchmark completed: {}/{} images processed successfully", 
