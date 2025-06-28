@@ -33,10 +33,6 @@ impl OneDriveFileStatus {
             OneDriveFileStatus::NotOneDrive => "Regular local file",
         }
     }
-    
-    fn is_safe_for_immediate_access(&self) -> bool {
-        matches!(self, OneDriveFileStatus::Local | OneDriveFileStatus::NotOneDrive)
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -65,11 +61,6 @@ impl FileInfo {
     
     pub fn will_trigger_download(&self) -> bool {
         matches!(self.onedrive_status, OneDriveFileStatus::OnlineOnly | OneDriveFileStatus::PartiallyDownloaded)
-    }
-    
-    fn can_get_metadata_safely(&self) -> bool {
-        // Metadata access is generally safe and won't trigger downloads
-        true
     }
 }
 
