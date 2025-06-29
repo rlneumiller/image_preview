@@ -150,6 +150,59 @@ impl ImageViewerApp {
                     ui.separator();
                     ui.heading("Debug Options");
                     ui.checkbox(&mut self.settings.debug_onedrive_detection, "Debug OneDrive detection");
+                    
+                    ui.separator();
+                    ui.heading("Filename Display");
+                    ui.checkbox(&mut self.settings.truncate_long_filenames, "Truncate long filenames");
+                    
+                    if self.settings.truncate_long_filenames {
+                        ui.horizontal(|ui| {
+                            ui.label("Max length:");
+                            ui.add(egui::Slider::new(&mut self.settings.max_filename_length, 20..=100));
+                        });
+                        
+                        ui.horizontal(|ui| {
+                            ui.label("Style:");
+                            egui::ComboBox::from_id_source("truncation_style")
+                                .selected_text(match self.settings.truncation_style {
+                                    crate::settings::FilenameTruncationStyle::None => "None",
+                                    crate::settings::FilenameTruncationStyle::Ellipsis => "Ellipsis (…)",
+                                    crate::settings::FilenameTruncationStyle::FadeEnd => "Fade End",
+                                })
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut self.settings.truncation_style, 
+                                        crate::settings::FilenameTruncationStyle::None, "None");
+                                    ui.selectable_value(&mut self.settings.truncation_style, 
+                                        crate::settings::FilenameTruncationStyle::Ellipsis, "Ellipsis (…)");
+                                    ui.selectable_value(&mut self.settings.truncation_style, 
+                                        crate::settings::FilenameTruncationStyle::FadeEnd, "Fade End");
+                                });
+                        });
+                        
+                        if self.settings.truncation_style != crate::settings::FilenameTruncationStyle::None {
+                            ui.horizontal(|ui| {
+                                ui.label("Ellipsis:");
+                                ui.add(egui::TextEdit::singleline(&mut self.settings.ellipsis_char).desired_width(40.0));
+                                if ui.button("…").clicked() {
+                                    self.settings.ellipsis_char = "…".to_string();
+                                }
+                                if ui.button("...").clicked() {
+                                    self.settings.ellipsis_char = "...".to_string();
+                                }
+                                if ui.button("..").clicked() {
+                                    self.settings.ellipsis_char = "..".to_string();
+                                }
+                            });
+                        }
+                        
+                        // Preview of truncation
+                        ui.horizontal(|ui| {
+                            ui.label("Preview:");
+                            let sample_filename = "very_long_filename_example_that_would_be_truncated.jpg";
+                            let truncated = self.settings.truncate_filename(sample_filename);
+                            ui.code(&truncated);
+                        });
+                    }
                 });
         }
     }
@@ -328,15 +381,31 @@ impl ImageViewerApp {
                                 }
                             }
                             
-                            let label = ui.selectable_label(is_selected, file_info.path.to_string_lossy());
+                            let filename = file_info.path.file_name()
+                                .map(|f| f.to_string_lossy().to_string())
+                                .unwrap_or_else(|| file_info.path.to_string_lossy().to_string());
+                            
+                            let display_filename = self.settings.truncate_filename(&filename);
+                            let label = ui.selectable_label(is_selected, display_filename);
+                            
                             if label.clicked() {
                                 self.selected_image_index = Some(index);
                                 changed = true;
                             }
                             
-                            // Show estimated render time on hover if available
+                            // Combine tooltips for full filename and render time
+                            let mut tooltip_parts = Vec::new();
+                            
+                            if let Some(filename_tooltip) = self.settings.get_full_filename_tooltip(&file_info.path) {
+                                tooltip_parts.push(filename_tooltip);
+                            }
+                            
                             if let Some(time) = estimated_time {
-                                label.on_hover_text(format!("Estimated render time: {:.0}ms", time));
+                                tooltip_parts.push(format!("Estimated render time: {:.0}ms", time));
+                            }
+                            
+                            if !tooltip_parts.is_empty() {
+                                label.on_hover_text(tooltip_parts.join("\n"));
                             }
                         });
                     }
@@ -459,7 +528,11 @@ impl ImageViewerApp {
                     ui.separator();
                     
                     if let Some(ref path) = self.pending_slow_image_path {
-                        ui.label(format!("Image: {}", path.file_name().unwrap_or_default().to_string_lossy()));
+                        let filename = path.file_name()
+                            .map(|f| f.to_string_lossy().to_string())
+                            .unwrap_or_else(|| path.to_string_lossy().to_string());
+                        let display_filename = self.settings.truncate_filename(&filename);
+                        ui.label(format!("Image: {}", display_filename));
                     }
                     
                     ui.label(format!(
@@ -523,7 +596,11 @@ impl ImageViewerApp {
                     ui.separator();
                     
                     if let Some(ref file_info) = self.pending_onedrive_file {
-                        ui.label(format!("File: {}", file_info.path.file_name().unwrap_or_default().to_string_lossy()));
+                        let filename = file_info.path.file_name()
+                            .map(|f| f.to_string_lossy().to_string())
+                            .unwrap_or_else(|| file_info.path.to_string_lossy().to_string());
+                        let display_filename = self.settings.truncate_filename(&filename);
+                        ui.label(format!("File: {}", display_filename));
                         ui.label(format!("Status: {}", file_info.onedrive_status.description()));
                         
                         if let Some(size) = file_info.estimated_download_size {
@@ -621,11 +698,19 @@ impl ImageViewerApp {
                         } else {
                             ""
                         };
-                        self.status_text = format!("Loaded: {}{}", path.to_string_lossy(), recolor_suffix);
+                        let filename = path.file_name()
+                            .map(|f| f.to_string_lossy().to_string())
+                            .unwrap_or_else(|| path.to_string_lossy().to_string());
+                        let display_filename = self.settings.truncate_filename(&filename);
+                        self.status_text = format!("Loaded: {}{}", display_filename, recolor_suffix);
                     }
                     Err(e) => {
                         self.image_texture = None;
-                        self.status_text = format!("Error loading {}: {}", path.to_string_lossy(), e);
+                        let filename = path.file_name()
+                            .map(|f| f.to_string_lossy().to_string())
+                            .unwrap_or_else(|| path.to_string_lossy().to_string());
+                        let display_filename = self.settings.truncate_filename(&filename);
+                        self.status_text = format!("Error loading {}: {}", display_filename, e);
                     }
                 }
             }
