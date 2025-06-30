@@ -4,30 +4,37 @@ use std::path::PathBuf;
 use eframe::egui;
 use egui::{ColorImage, TextureHandle};
 use image::ImageReader;
-use resvg::{tiny_skia, usvg};
+use resvg;
 use regex;
 
 use crate::settings::ImageLoadingSettings;
-use crate::onedrive::FileInfo;
+use crate::file_locality::FileInfo;
 use crate::benchmark::ImageCharacteristics;
 
-pub fn should_skip_large_file(path: &PathBuf, settings: &ImageLoadingSettings) -> Option<String> {
-    // Check OneDrive status first to avoid any potential file access issues
-    let file_info = FileInfo::new(path.clone());
-    if file_info.will_trigger_download() {
-        return Some(format!(
-            "Skipped OneDrive on-demand file: {}", 
-            path.to_string_lossy()
-        ));
+pub fn should_skip_large_file(path: &PathBuf, settings: &ImageLoadingSettings, force_load: bool) -> Option<String> {
+    // Check file locality status first to avoid any potential file access issues (unless forced)
+    if !force_load {
+        let file_info = FileInfo::new(path.clone());
+        if file_info.will_trigger_download() {
+            return Some(format!(
+                "Skipped on-demand file: {}", 
+                path.to_string_lossy()
+            ));
+        }
     }
     
-    if let Some(max_mb) = settings.max_file_size_mb {
+    if let Some(max_mb) = settings.get_effective_max_file_size_mb() {
         if let Ok(metadata) = std::fs::metadata(path) {
             let size_mb = metadata.len() / (1024 * 1024);
             if size_mb > max_mb as u64 {
+                let limit_source = if settings.max_file_size_mb.is_some() {
+                    "manual"
+                } else {
+                    "dynamic"
+                };
                 return Some(format!(
-                    "Skipped large file ({} MB > {} MB limit): {}",
-                    size_mb, max_mb, path.to_string_lossy()
+                    "Skipped large file ({} MB > {} MB {} limit): {}",
+                    size_mb, max_mb, limit_source, path.to_string_lossy()
                 ));
             }
         }
@@ -128,42 +135,40 @@ pub fn recolor_svg_simple(svg_content: &str, settings: &ImageLoadingSettings) ->
     result
 }
 
-pub fn load_svg_image(path: &PathBuf, settings: &ImageLoadingSettings, ctx: &egui::Context) -> Result<TextureHandle, String> {
-    // Check OneDrive status first to avoid triggering downloads
-    let file_info = FileInfo::new(path.clone());
-    if file_info.will_trigger_download() {
-        return Err("Cannot load OneDrive on-demand file - would trigger download".to_string());
+pub fn load_svg_image(path: &PathBuf, settings: &ImageLoadingSettings, ctx: &egui::Context, force_load: bool) -> Result<TextureHandle, String> {
+    // Check file locality status first to avoid triggering downloads (unless forced)
+    if !force_load {
+        let file_info = FileInfo::new(path.clone());
+        if file_info.will_trigger_download() {
+            return Err("Cannot load on-demand file - would trigger download".to_string());
+        }
     }
     
     let svg_content = std::fs::read_to_string(path)
         .map_err(|e| format!("Failed to read SVG file: {}", e))?;
-    
+
     // Apply recoloring if enabled
     let processed_svg = recolor_svg_simple(&svg_content, settings);
     let svg_bytes = processed_svg.as_bytes();
     
-    let mut fontdb = usvg::fontdb::Database::new();
+    let mut fontdb = resvg::usvg::fontdb::Database::new();
     fontdb.load_system_fonts();
     
-    let options = usvg::Options {
+    let options = resvg::usvg::Options {
         fontdb: std::sync::Arc::new(fontdb),
         ..Default::default()
     };
     
-    let tree = usvg::Tree::from_data(svg_bytes, &options)
+    let tree = resvg::usvg::Tree::from_data(svg_bytes, &options)
         .map_err(|e| format!("Failed to parse SVG: {}", e))?;
     
-    let size = tree.size();
-    let width = size.width() as u32;
-    let height = size.height() as u32;
+    let bbox = tree.size();
+    let width = bbox.width() as u32;
+    let height = bbox.height() as u32;
     
-    // Apply scaling if needed
-    const LARGE_SVG_THRESHOLD: u32 = 8192;
+    // Handle very large SVGs
+    const LARGE_SVG_THRESHOLD: u32 = 4096;
     let (scaled_width, scaled_height) = if width > LARGE_SVG_THRESHOLD || height > LARGE_SVG_THRESHOLD {
-        if settings.skip_large_images {
-            return Err(format!("SVG too large ({}x{} > {}x{} threshold)", width, height, LARGE_SVG_THRESHOLD, LARGE_SVG_THRESHOLD));
-        }
-        
         if settings.auto_scale_large_images {
             let scale_factor = (LARGE_SVG_THRESHOLD as f32 / width.max(height) as f32).min(1.0);
             ((width as f32 * scale_factor) as u32, (height as f32 * scale_factor) as u32)
@@ -174,12 +179,12 @@ pub fn load_svg_image(path: &PathBuf, settings: &ImageLoadingSettings, ctx: &egu
         (width, height)
     };
     
-    let mut pixmap = tiny_skia::Pixmap::new(scaled_width, scaled_height)
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(scaled_width, scaled_height)
         .ok_or("Failed to create pixmap")?;
     
     let scale_x = scaled_width as f32 / width as f32;
     let scale_y = scaled_height as f32 / height as f32;
-    let transform = tiny_skia::Transform::from_scale(scale_x, scale_y);
+    let transform = resvg::tiny_skia::Transform::from_scale(scale_x, scale_y);
     
     resvg::render(&tree, transform, &mut pixmap.as_mut());
     
@@ -204,11 +209,13 @@ pub fn load_svg_image(path: &PathBuf, settings: &ImageLoadingSettings, ctx: &egu
     ))
 }
 
-pub fn load_raster_image(path: &PathBuf, settings: &ImageLoadingSettings, ctx: &egui::Context) -> Result<TextureHandle, String> {
-    // Check OneDrive status first to avoid triggering downloads
-    let file_info = FileInfo::new(path.clone());
-    if file_info.will_trigger_download() {
-        return Err("Cannot load OneDrive on-demand file - would trigger download".to_string());
+pub fn load_raster_image(path: &PathBuf, settings: &ImageLoadingSettings, ctx: &egui::Context, force_load: bool) -> Result<TextureHandle, String> {
+    // Check file locality status first to avoid triggering downloads (unless forced)
+    if !force_load {
+        let file_info = FileInfo::new(path.clone());
+        if file_info.will_trigger_download() {
+            return Err("Cannot load on-demand file - would trigger download".to_string());
+        }
     }
     
     let img = ImageReader::open(path)
@@ -234,7 +241,7 @@ pub fn load_raster_image(path: &PathBuf, settings: &ImageLoadingSettings, ctx: &
 }
 
 pub fn estimate_image_render_time(path: &PathBuf, performance_profile: &crate::benchmark::PerformanceProfile) -> Option<f64> {
-    // For OneDrive files, skip dimension detection to avoid triggering downloads
+    // For on-demand files, skip dimension detection to avoid triggering downloads
     let file_info = FileInfo::new(path.clone());
     if file_info.will_trigger_download() {
         return None; // Cannot safely estimate without triggering download

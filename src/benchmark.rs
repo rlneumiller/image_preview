@@ -8,7 +8,7 @@ use egui::{ColorImage, TextureHandle};
 use glob::glob;
 use image::ImageReader;
 
-use crate::onedrive::FileInfo;
+use crate::file_locality::FileInfo;
 use crate::settings::DEFAULT_SUPPORTED_FORMATS;
 
 // Performance categories based on simple CPU benchmark
@@ -400,10 +400,10 @@ pub fn find_safe_benchmark_images(limits: &BenchmarkLimits) -> Vec<PathBuf> {
     let mut safe_candidates: Vec<(PathBuf, f64)> = candidates
         .into_iter()
         .filter_map(|path| {
-            // Check OneDrive status first to avoid triggering downloads
+            // Check file locality status first to avoid triggering downloads
             let file_info = FileInfo::new(path.clone());
             if file_info.will_trigger_download() {
-                return None; // Skip OneDrive files completely
+                return None; // Skip on-demand files completely
             }
             
             // Check file size
@@ -412,14 +412,14 @@ pub fn find_safe_benchmark_images(limits: &BenchmarkLimits) -> Vec<PathBuf> {
                 
                 // Only include files within safe size limits
                 if file_size_mb <= limits.max_file_size_mb {
-                    // Double-check OneDrive status before any file operations
+                    // Double-check file locality status before any file operations
                     let file_info_check = FileInfo::new(path.clone());
                     if file_info_check.will_trigger_download() {
                         return None; // Extra safety check
                     }
                     
                     // Try to get basic image info without fully loading
-                    // Even opening the file might trigger downloads for some OneDrive configurations
+                    // Even opening the file might trigger downloads for some on-demand configurations
                     if let Ok(reader) = ImageReader::open(&path) {
                         if let Ok((width, height)) = reader.into_dimensions() {
                             let megapixels = (width as f64 * height as f64) / 1_000_000.0;
@@ -448,7 +448,7 @@ pub fn find_safe_benchmark_images(limits: &BenchmarkLimits) -> Vec<PathBuf> {
 }
 
 pub fn benchmark_image(path: &PathBuf, ctx: &egui::Context) -> BenchmarkResult {
-    // Skip OneDrive files during benchmarking to avoid triggering downloads
+    // Skip on-demand files during benchmarking to avoid triggering downloads
     let file_info = FileInfo::new(path.clone());
     if file_info.will_trigger_download() {
         let format = path.extension()
@@ -474,7 +474,7 @@ pub fn benchmark_image(path: &PathBuf, ctx: &egui::Context) -> BenchmarkResult {
             texture_creation_time_ms: 0.0,
             total_time_ms: 0.0,
             success: false,
-            error_message: Some("Skipped OneDrive file to avoid triggering download during benchmark".to_string()),
+            error_message: Some("Skipped on-demand file to avoid triggering download during benchmark".to_string()),
         };
     }
     

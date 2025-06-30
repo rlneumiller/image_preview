@@ -117,7 +117,7 @@ Users benefit from:
 ## Future Improvements
 
 Potential enhancements:
-- Asynchronous image loading and benchmarking to prevent UI blocking
+- Consider asynchronous benchmarking to prevent UI blocking
 - Dynamic limit adjustment based on available RAM
 - Format-specific optimization (JPEG vs PNG vs BMP)
 - Background benchmarking for discovered images

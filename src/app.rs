@@ -8,11 +8,12 @@ use glob::glob;
 
 use crate::settings::ImageLoadingSettings;
 use crate::benchmark::{PerformanceProfile, SystemPerformanceCategory, run_simple_cpu_benchmark};
-use crate::onedrive::FileInfo;
+use crate::file_locality::FileInfo;
 use crate::image_processing::{should_skip_large_file, load_svg_image, load_raster_image, estimate_image_render_time};
+use crate::icons::IconRenderer;
 
 pub struct ImageViewerApp {
-    pub file_infos: Vec<FileInfo>,  // Changed from image_paths to include OneDrive status
+    pub file_infos: Vec<FileInfo>,
     pub selected_image_index: Option<usize>,
     pub image_texture: Option<TextureHandle>,
     pub status_text: String,
@@ -28,9 +29,11 @@ pub struct ImageViewerApp {
     pub show_slow_image_dialog: bool,
     pub pending_slow_image_path: Option<PathBuf>,
     pub pending_slow_image_estimated_time: f64,
-    // OneDrive-specific fields
-    pub show_onedrive_download_dialog: bool,
-    pub pending_onedrive_file: Option<FileInfo>,
+    // File download-specific fields
+    pub show_download_dialog: bool,
+    pub pending_download_file: Option<FileInfo>,
+    // Icon renderer
+    pub icon_renderer: IconRenderer,
 }
 
 impl Default for ImageViewerApp {
@@ -61,8 +64,9 @@ impl Default for ImageViewerApp {
             show_slow_image_dialog: false,
             pending_slow_image_path: None,
             pending_slow_image_estimated_time: 0.0,
-            show_onedrive_download_dialog: false,
-            pending_onedrive_file: None,
+            show_download_dialog: false,
+            pending_download_file: None,
+            icon_renderer: IconRenderer::new(),
         }
     }
 }
@@ -80,12 +84,49 @@ impl eframe::App for ImageViewerApp {
 }
 
 impl ImageViewerApp {
+    /// Update the locality status of a file after it has been accessed/downloaded
+    fn update_file_locality_status(&mut self, file_path: &PathBuf) {
+        if let Some(file_info) = self.file_infos.iter_mut().find(|f| f.path == *file_path) {
+            let new_status = crate::file_locality::get_file_locality_status(file_path);
+            if file_info.locality_status != new_status {
+                // Clear estimated download size if the file is now local
+                let is_now_local = matches!(new_status, crate::file_locality::FileLocalityStatus::Local);
+                file_info.locality_status = new_status;
+                if is_now_local {
+                    file_info.estimated_download_size = None;
+                }
+            }
+        }
+    }
+
+    /// Refresh locality status for all files (useful if OneDrive has synced files in background)
+    pub fn refresh_all_file_locality_status(&mut self) {
+        for file_info in &mut self.file_infos {
+            let new_status = crate::file_locality::get_file_locality_status(&file_info.path);
+            if file_info.locality_status != new_status {
+                // Clear estimated download size if the file is now local
+                let is_now_local = matches!(new_status, crate::file_locality::FileLocalityStatus::Local);
+                let is_now_on_demand = matches!(new_status, crate::file_locality::FileLocalityStatus::OnDemand);
+                file_info.locality_status = new_status;
+                if is_now_local {
+                    file_info.estimated_download_size = None;
+                } else if is_now_on_demand {
+                    // Re-calculate download size for on-demand files
+                    file_info.estimated_download_size = std::fs::metadata(&file_info.path).ok().map(|m| m.len());
+                }
+            }
+        }
+    }
+
     fn render_top_menu(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("Settings", |ui| {
                     if ui.button("Image Loading Settings").clicked() {
                         self.show_settings = !self.show_settings;
+                    }
+                    if ui.button("Refresh File Status").clicked() {
+                        self.refresh_all_file_locality_status();
                     }
                 });
                 ui.menu_button("Performance", |ui| {
@@ -117,16 +158,44 @@ impl ImageViewerApp {
 
                     ui.separator();
                     
+                    ui.heading("File Size Limits");
+                    
+                    // Show current effective limit (whether manual or dynamic)
+                    let effective_limit = self.settings.get_effective_max_file_size_mb().unwrap_or(0);
+                    let dynamic_limit = crate::settings::ImageLoadingSettings::calculate_dynamic_max_file_size_mb();
+                    
                     ui.horizontal(|ui| {
-                        ui.label("Max file size (MB):");
+                        ui.label("Current limit:");
+                        if self.settings.max_file_size_mb.is_some() {
+                            ui.colored_label(egui::Color32::LIGHT_BLUE, format!("{} MB (manual)", effective_limit));
+                        } else {
+                            ui.colored_label(egui::Color32::LIGHT_GREEN, format!("{} MB (dynamic)", effective_limit));
+                        }
+                    });
+                    
+                    ui.horizontal(|ui| {
+                        ui.label("Dynamic recommendation:");
+                        ui.colored_label(egui::Color32::GRAY, format!("{} MB (based on available RAM)", dynamic_limit));
+                    });
+                    
+                    ui.horizontal(|ui| {
+                        ui.label("Manual override (MB):");
                         let mut max_size = self.settings.max_file_size_mb.unwrap_or(0);
-                        if ui.add(egui::Slider::new(&mut max_size, 1..=10)).changed() {
+                        if ui.add(egui::Slider::new(&mut max_size, 1..=2048)).changed() {
                             self.settings.max_file_size_mb = if max_size > 0 { Some(max_size) } else { None };
                         }
-                        if ui.button("No limit").clicked() {
+                        if ui.button("Use Dynamic").clicked() {
                             self.settings.max_file_size_mb = None;
                         }
                     });
+                    
+                    // Show explanation
+                    ui.label("💡 Dynamic limit is calculated as 90% of available system RAM");
+                    if self.settings.max_file_size_mb.is_none() {
+                        ui.colored_label(egui::Color32::LIGHT_GREEN, "✓ Using dynamic calculation - adjusts automatically based on system memory");
+                    } else {
+                        ui.colored_label(egui::Color32::YELLOW, "⚠ Using manual override - consider using dynamic for better memory management");
+                    }
 
                     ui.separator();
                     ui.heading("SVG Options");
@@ -149,7 +218,7 @@ impl ImageViewerApp {
                     
                     ui.separator();
                     ui.heading("Debug Options");
-                    ui.checkbox(&mut self.settings.debug_onedrive_detection, "Debug OneDrive detection");
+                    ui.checkbox(&mut self.settings.debug_file_locality_detection, "Debug file locality detection");
                     
                     ui.separator();
                     ui.heading("Filename Display");
@@ -278,15 +347,14 @@ impl ImageViewerApp {
                         .max_height(200.0)
                         .show(ui, |ui| {
                             for result in &self.performance_profile.benchmark_results {
-                                let status = if result.success { "✓" } else { "✗" };
-                                let color = if result.success { 
-                                    egui::Color32::GREEN 
+                                let (icon_name, color) = if result.success { 
+                                    ("circle-check", egui::Color32::GREEN)
                                 } else { 
-                                    egui::Color32::RED 
+                                    ("x", egui::Color32::RED)
                                 };
                                 
                                 ui.horizontal(|ui| {
-                                    ui.colored_label(color, status);
+                                    self.icon_renderer.icon_label(ui, ctx, icon_name, 16.0, color);
                                     ui.label(format!(
                                         "{} ({}x{}, {:.1}MP): {:.1}ms", 
                                         result.characteristics.format,
@@ -334,24 +402,29 @@ impl ImageViewerApp {
                         // Pre-calculate performance info to avoid borrowing issues
                         let has_benchmark_data = !self.performance_profile.benchmark_results.is_empty();
                         let performance_info = if has_benchmark_data && !file_info.will_trigger_download() {
-                            // Only calculate performance for non-OneDrive files to avoid triggering downloads
+                            // Only calculate performance for locally available files to avoid triggering downloads
                             self.will_image_render_quickly(&file_info.path)
                         } else {
                             None
                         };
                         let estimated_time = if has_benchmark_data && !file_info.will_trigger_download() {
-                            // Only estimate time for non-OneDrive files to avoid triggering downloads
+                            // Only estimate time for locally available files to avoid triggering downloads
                             estimate_image_render_time(&file_info.path, &self.performance_profile)
                         } else {
                             None
                         };
                         
                         ui.horizontal(|ui| {
-                            // Show OneDrive status indicator
-                            ui.label(file_info.onedrive_status.icon())
+                            // Show file locality status indicator
+                            let locality_color = match file_info.locality_status {
+                                crate::file_locality::FileLocalityStatus::Local => egui::Color32::GREEN,
+                                crate::file_locality::FileLocalityStatus::OnDemand => egui::Color32::LIGHT_BLUE,
+                                crate::file_locality::FileLocalityStatus::Unknown => egui::Color32::GRAY,
+                            };
+                            self.icon_renderer.icon_label(ui, ctx, file_info.locality_status.icon(), 16.0, locality_color)
                                 .on_hover_text(format!(
                                     "{}\n{}",
-                                    file_info.onedrive_status.description(),
+                                    file_info.locality_status.description(),
                                     if file_info.will_trigger_download() {
                                         if let Some(size) = file_info.estimated_download_size {
                                             format!("Download size: {:.1} MB", size as f64 / (1024.0 * 1024.0))
@@ -366,18 +439,22 @@ impl ImageViewerApp {
                             // Show performance indicator if benchmark data is available
                             if has_benchmark_data {
                                 if file_info.will_trigger_download() {
-                                    // Special indicator for OneDrive files
-                                    ui.label("☁️").on_hover_text("OneDrive file - performance estimate unavailable until downloaded");
+                                    // Special indicator for files requiring download
+                                    self.icon_renderer.icon_label(ui, ctx, "cloud", 16.0, egui::Color32::LIGHT_BLUE).on_hover_text("Remote file - performance estimate unavailable until downloaded");
                                 } else if let Some(will_be_fast) = performance_info {
-                                    let indicator = if will_be_fast { "🟢" } else { "🟡" };
+                                    let (icon, color) = if will_be_fast { 
+                                        ("circle-check", egui::Color32::GREEN)
+                                    } else { 
+                                        ("clock", egui::Color32::YELLOW)
+                                    };
                                     let tooltip = if will_be_fast { 
                                         "Expected to render quickly" 
                                     } else { 
                                         "May take longer to render" 
                                     };
-                                    ui.label(indicator).on_hover_text(tooltip);
+                                    self.icon_renderer.icon_label(ui, ctx, icon, 16.0, color).on_hover_text(tooltip);
                                 } else {
-                                    ui.label("⚪").on_hover_text("Performance unknown");
+                                    self.icon_renderer.icon_label(ui, ctx, "help", 16.0, egui::Color32::GRAY).on_hover_text("Performance unknown");
                                 }
                             }
                             
@@ -506,7 +583,7 @@ impl ImageViewerApp {
 
     fn handle_dialogs(&mut self, ctx: &egui::Context) {
         self.handle_slow_image_dialog(ctx);
-        self.handle_onedrive_dialog(ctx);
+        self.handle_download_dialog(ctx);
     }
 
     fn handle_slow_image_dialog(&mut self, ctx: &egui::Context) {
@@ -515,7 +592,6 @@ impl ImageViewerApp {
         }
 
         let mut load_anyway = false;
-        let mut cancel = false;
         
         egui::Window::new("Slow Image Warning")
             .open(&mut self.show_slow_image_dialog)
@@ -524,7 +600,10 @@ impl ImageViewerApp {
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
-                    ui.label("⚠️ Performance Warning");
+                    ui.horizontal(|ui| {
+                        self.icon_renderer.icon_label(ui, ctx, "alert-triangle", 16.0, egui::Color32::YELLOW);
+                        ui.label("Performance Warning");
+                    });
                     ui.separator();
                     
                     if let Some(ref path) = self.pending_slow_image_path {
@@ -550,18 +629,15 @@ impl ImageViewerApp {
                     
                     ui.separator();
                     
-                    ui.horizontal(|ui| {
+                    ui.vertical_centered(|ui| {
                         if ui.button("Load Anyway").clicked() {
                             load_anyway = true;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            cancel = true;
                         }
                     });
                 });
             });
         
-        if cancel || !self.show_slow_image_dialog {
+        if !self.show_slow_image_dialog {
             self.pending_slow_image_path = None;
             self.pending_slow_image_estimated_time = 0.0;
         } else if load_anyway {
@@ -577,31 +653,34 @@ impl ImageViewerApp {
         }
     }
 
-    fn handle_onedrive_dialog(&mut self, ctx: &egui::Context) {
-        if !self.show_onedrive_download_dialog {
+    fn handle_download_dialog(&mut self, ctx: &egui::Context) {
+        if !self.show_download_dialog {
             return;
         }
 
         let mut download_anyway = false;
-        let mut cancel = false;
         
-        egui::Window::new("OneDrive Download Warning")
-            .open(&mut self.show_onedrive_download_dialog)
+        egui::Window::new("File Download Warning")
+            .open(&mut self.show_download_dialog)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
-                    ui.label("☁️⬇️ OneDrive Download Required");
+                    ui.horizontal(|ui| {
+                        self.icon_renderer.icon_label(ui, ctx, "cloud", 16.0, egui::Color32::LIGHT_BLUE);
+                        self.icon_renderer.icon_label(ui, ctx, "download", 16.0, egui::Color32::LIGHT_BLUE);
+                        ui.label("File Download Required");
+                    });
                     ui.separator();
                     
-                    if let Some(ref file_info) = self.pending_onedrive_file {
+                    if let Some(ref file_info) = self.pending_download_file {
                         let filename = file_info.path.file_name()
                             .map(|f| f.to_string_lossy().to_string())
                             .unwrap_or_else(|| file_info.path.to_string_lossy().to_string());
                         let display_filename = self.settings.truncate_filename(&filename);
                         ui.label(format!("File: {}", display_filename));
-                        ui.label(format!("Status: {}", file_info.onedrive_status.description()));
+                        ui.label(format!("Status: {}", file_info.locality_status.description()));
                         
                         if let Some(size) = file_info.estimated_download_size {
                             ui.label(format!("Download size: {:.1} MB", size as f64 / (1024.0 * 1024.0)));
@@ -609,28 +688,25 @@ impl ImageViewerApp {
                     }
                     
                     ui.separator();
-                    ui.label("This file is stored in OneDrive and needs to be downloaded");
+                    ui.label("This file is stored remotely and needs to be downloaded");
                     ui.label("before it can be viewed. This may take some time depending");
                     ui.label("on your internet connection.");
                     
                     ui.separator();
                     
-                    ui.horizontal(|ui| {
+                    ui.vertical_centered(|ui| {
                         if ui.button("Download and Open").clicked() {
                             download_anyway = true;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            cancel = true;
                         }
                     });
                 });
             });
         
-        if cancel || !self.show_onedrive_download_dialog {
-            self.pending_onedrive_file = None;
+        if !self.show_download_dialog {
+            self.pending_download_file = None;
         } else if download_anyway {
-            self.show_onedrive_download_dialog = false;
-            if let Some(file_info) = self.pending_onedrive_file.take() {
+            self.show_download_dialog = false;
+            if let Some(file_info) = self.pending_download_file.take() {
                 // Find the index and load the image (this will trigger download)
                 if let Some(index) = self.file_infos.iter().position(|f| f.path == file_info.path) {
                     self.selected_image_index = Some(index);
@@ -643,11 +719,11 @@ impl ImageViewerApp {
     pub fn load_selected_image(&mut self, ctx: &egui::Context) {
         if let Some(index) = self.selected_image_index {
             if let Some(file_info) = self.file_infos.get(index) {
-                // Check if this is an OneDrive file that will trigger download
+                // Check if this is a file that will trigger download
                 if file_info.will_trigger_download() {
-                    // Show OneDrive download warning dialog
-                    self.pending_onedrive_file = Some(file_info.clone());
-                    self.show_onedrive_download_dialog = true;
+                    // Show download warning dialog
+                    self.pending_download_file = Some(file_info.clone());
+                    self.show_download_dialog = true;
                     return; // Don't load immediately, wait for user confirmation
                 }
                 
@@ -673,10 +749,10 @@ impl ImageViewerApp {
     pub fn force_load_selected_image(&mut self, ctx: &egui::Context) {
         if let Some(index) = self.selected_image_index {
             if let Some(file_info) = self.file_infos.get(index) {
-                let path = &file_info.path;
+                let path = file_info.path.clone(); // Clone the path to avoid borrowing issues
                 
-                // Check file size first
-                if let Some(skip_message) = should_skip_large_file(path, &self.settings) {
+                // Check file size first (but allow on-demand files when forcing)
+                if let Some(skip_message) = should_skip_large_file(&path, &self.settings, true) {
                     self.status_text = skip_message;
                     self.image_texture = None;
                     return;
@@ -685,9 +761,9 @@ impl ImageViewerApp {
                 let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
                 
                 let result = if extension == "svg" {
-                    load_svg_image(path, &self.settings, ctx)
+                    load_svg_image(&path, &self.settings, ctx, true)
                 } else {
-                    load_raster_image(path, &self.settings, ctx)
+                    load_raster_image(&path, &self.settings, ctx, true)
                 };
 
                 match result {
@@ -703,6 +779,9 @@ impl ImageViewerApp {
                             .unwrap_or_else(|| path.to_string_lossy().to_string());
                         let display_filename = self.settings.truncate_filename(&filename);
                         self.status_text = format!("Loaded: {}{}", display_filename, recolor_suffix);
+                        
+                        // Update file locality status after successful load (in case it was downloaded)
+                        self.update_file_locality_status(&path);
                     }
                     Err(e) => {
                         self.image_texture = None;

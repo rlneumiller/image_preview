@@ -1,5 +1,7 @@
 //! Image loading settings and configuration
 
+use sysinfo::System;
+
 pub const DEFAULT_SUPPORTED_FORMATS: &[&str] = &["png", "jpg", "jpeg", "svg", "bmp", "gif"];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -21,7 +23,7 @@ pub struct ImageLoadingSettings {
     pub supported_formats: Vec<String>,
     pub svg_recolor_enabled: bool,
     pub svg_target_color: [u8; 3], // RGB values
-    pub debug_onedrive_detection: bool, // Show debug info for OneDrive file detection
+    pub debug_file_locality_detection: bool, // Show debug info for file locality detection
     // Filename display settings
     pub truncate_long_filenames: bool,
     pub max_filename_length: usize,
@@ -35,14 +37,14 @@ impl Default for ImageLoadingSettings {
             skip_large_images: false,
             auto_scale_large_images: true,
             auto_scale_to_fit: true, // Enabled by default
-            max_file_size_mb: Some(100), // 100MB default limit
+            max_file_size_mb: None, // Use dynamic calculation by default
             supported_formats: DEFAULT_SUPPORTED_FORMATS
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
             svg_recolor_enabled: false,
             svg_target_color: [128, 128, 128], // Default gray
-            debug_onedrive_detection: false, // Disabled by default
+            debug_file_locality_detection: false, // Disabled by default
             truncate_long_filenames: true, // Enabled by default
             max_filename_length: 25, // Default max length
             truncation_style: FilenameTruncationStyle::Ellipsis, // Default truncation style
@@ -113,6 +115,40 @@ impl ImageLoadingSettings {
         } else {
             None
         }
+    }
+
+    /// Calculate dynamic max file size based on available system RAM
+    /// Returns the recommended max file size in MB based on (available RAM - 10%)
+    pub fn calculate_dynamic_max_file_size_mb() -> u32 {
+        let mut system = System::new_all();
+        system.refresh_memory();
+        
+        let total_memory_kb = system.total_memory();
+        let available_memory_kb = system.available_memory();
+        
+        // Use available memory, but fall back to total memory if available is not reliable
+        let usable_memory_kb = if available_memory_kb > 0 && available_memory_kb < total_memory_kb {
+            available_memory_kb
+        } else {
+            // Estimate available as 70% of total if system reports 0 or unrealistic available memory
+            (total_memory_kb as f64 * 0.7) as u64
+        };
+        
+        // Calculate 90% of available memory (leaving 10% buffer)
+        let safe_memory_kb = (usable_memory_kb as f64 * 0.9) as u64;
+        
+        // Convert to MB and ensure reasonable bounds
+        let safe_memory_mb = (safe_memory_kb / 1024) as u32;
+        
+        // Set reasonable bounds: minimum 50MB, maximum 2048MB (2GB)
+        // For very low-memory systems, ensure at least 50MB
+        // For high-memory systems, cap at 2GB to prevent excessive memory usage
+        safe_memory_mb.clamp(50, 2048)
+    }
+
+    /// Get the effective max file size, using dynamic calculation if max_file_size_mb is None
+    pub fn get_effective_max_file_size_mb(&self) -> Option<u32> {
+        self.max_file_size_mb.or_else(|| Some(Self::calculate_dynamic_max_file_size_mb()))
     }
 }
 
@@ -274,5 +310,32 @@ mod tests {
         let tooltip = settings.get_full_filename_tooltip(long_path);
         assert!(tooltip.is_some());
         assert!(tooltip.unwrap().contains("very_long_filename.jpg"));
+    }
+
+    #[test]
+    fn test_dynamic_max_file_size_calculation() {
+        let dynamic_size = ImageLoadingSettings::calculate_dynamic_max_file_size_mb();
+        
+        // Should be within reasonable bounds
+        assert!(dynamic_size >= 50, "Dynamic size should be at least 50MB, got {}", dynamic_size);
+        assert!(dynamic_size <= 2048, "Dynamic size should be at most 2048MB, got {}", dynamic_size);
+    }
+
+    #[test]
+    fn test_effective_max_file_size_manual_override() {
+        let mut settings = ImageLoadingSettings::default();
+        settings.max_file_size_mb = Some(200);
+        
+        let effective = settings.get_effective_max_file_size_mb();
+        assert_eq!(effective, Some(200));
+    }
+
+    #[test]
+    fn test_effective_max_file_size_dynamic() {
+        let settings = ImageLoadingSettings::default();
+        
+        let effective = settings.get_effective_max_file_size_mb();
+        assert!(effective.is_some());
+        assert!(effective.unwrap() >= 50);
     }
 }
