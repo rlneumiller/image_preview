@@ -43,12 +43,10 @@ pub fn should_skip_large_file(path: &PathBuf, settings: &ImageLoadingSettings, f
 }
 
 pub fn scale_image_if_needed(img: image::DynamicImage, settings: &ImageLoadingSettings) -> Result<image::DynamicImage, String> {
-    // With max_texture_size removed, we'll only scale if auto_scale_large_images is enabled
-    // and the image is considered "large" (using a reasonable default threshold)
+    // Only scale if auto_scale_large_images is enabled and the image is considered "large"
     let (width, height) = (img.width(), img.height());
     
-    // Use a reasonable default threshold for "large" images (e.g., 8192x8192)
-    const LARGE_IMAGE_THRESHOLD: u32 = 8192;
+    const LARGE_IMAGE_THRESHOLD: u32 = 8192; // Arbitrary threshold for large images
     
     if width <= LARGE_IMAGE_THRESHOLD && height <= LARGE_IMAGE_THRESHOLD {
         return Ok(img);
@@ -100,8 +98,8 @@ pub fn recolor_svg_simple(svg_content: &str, settings: &ImageLoadingSettings) ->
         println!("Replaced currentColor with {}, {} instances", target_hex, changes_made);
     }
     
-    // Replace fill colors (but preserve "none" and gradients)
-    let fill_regex = regex::Regex::new(r#"fill="(#[0-9a-fA-F]{6}|#[0-9a-fA-F]{3}|black|white|red|green|blue|yellow|cyan|magenta|purple|orange|brown|pink|gray|grey)""#).unwrap();
+    // Match case insensitive fill colors, allowing for hex codes, named colors, and "none"
+    let fill_regex = regex::Regex::new(r#"(?i)fill=(["'])(#[0-9a-f]{6}|#[0-9a-f]{3}|black|white|red|green|blue|yellow|cyan|magenta|purple|orange|brown|pink|gray|grey)\1"#).unwrap();
     let before_count = result.len();
     result = fill_regex.replace_all(&result, &format!(r#"fill="{}""#, target_hex)).to_string();
     if result.len() != before_count {
@@ -109,8 +107,8 @@ pub fn recolor_svg_simple(svg_content: &str, settings: &ImageLoadingSettings) ->
         println!("Replaced fill colors");
     }
         
-    // Replace stroke colors
-    let stroke_regex = regex::Regex::new(r#"stroke="(#[0-9a-fA-F]{6}|#[0-9a-fA-F]{3}|black|white|red|green|blue|yellow|cyan|magenta|purple|orange|brown|pink|gray|grey)""#).unwrap();
+    // Match case insensitive stroke colors, allowing for hex codes, named colors, and "none"
+    let stroke_regex = regex::Regex::new(r#"(?i)stroke=(["'])(#[0-9a-f]{6}|#[0-9a-f]{3}|black|white|red|green|blue|yellow|cyan|magenta|purple|orange|brown|pink|gray|grey)\1"#).unwrap();
     let before_count = result.len();
     result = stroke_regex.replace_all(&result, &format!(r#"stroke="{}""#, target_hex)).to_string();
     if result.len() != before_count {
@@ -118,8 +116,8 @@ pub fn recolor_svg_simple(svg_content: &str, settings: &ImageLoadingSettings) ->
         println!("Replaced stroke colors");
     }
 
-    // Handle CSS style attributes
-    let style_regex = regex::Regex::new(r#"style="[^"]*(?:fill|stroke):\s*(#[0-9a-fA-F]{6}|#[0-9a-fA-F]{3}|black|white|red|green|blue|yellow|cyan|magenta|currentColor)[^"]*""#).unwrap();
+    // Match case insensitive style attributes that contain fill or stroke colors 
+    let style_regex = regex::Regex::new(r#"(?i)style="[^"]*(?:fill|stroke):\s*(#[0-9a-f]{6}|#[0-9a-f]{3}|black|white|red|green|blue|yellow|cyan|magenta|currentColor)[^"]*""#).unwrap();
     let before_count = result.len();
     result = style_regex.replace_all(&result, &format!(r#"style="fill: {}; stroke: {};""#, target_hex, target_hex)).to_string();
     if result.len() != before_count {

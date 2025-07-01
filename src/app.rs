@@ -232,7 +232,7 @@ impl ImageViewerApp {
                         
                         ui.horizontal(|ui| {
                             ui.label("Style:");
-                            egui::ComboBox::from_id_source("truncation_style")
+                            egui::ComboBox::from_id_salt("truncation_style")
                                 .selected_text(match self.settings.truncation_style {
                                     crate::settings::FilenameTruncationStyle::None => "None",
                                     crate::settings::FilenameTruncationStyle::Ellipsis => "Ellipsis (…)",
@@ -499,7 +499,7 @@ impl ImageViewerApp {
             ui.style_mut().visuals.extreme_bg_color = egui::Color32::from_gray(128);
             let frame = egui::Frame::default()
                 .fill(egui::Color32::from_gray(128))
-                .inner_margin(egui::Margin::same(10.0));
+                .inner_margin(egui::Margin::same(10));
             
             frame.show(ui, |ui| {
                 ui.vertical_centered(|ui| {
